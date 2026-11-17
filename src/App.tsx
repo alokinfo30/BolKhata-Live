@@ -12,13 +12,19 @@ import {
 } from './firebase';
 import {
   executeLedgerAndInventoryTx,
+  importCustomersBatch,
+  importInventoryBatch,
   logAgentTrace,
   logSentimentFeedback,
+  lookupCustomerAndStock,
   resolveApproval,
   seedShopDataIfEmpty,
   undoLastTransaction,
   updateRestockStatus,
+  type CsvCustomerInput,
+  type CsvInventoryInput,
 } from './services/firestoreOps';
+import { getApiUrl } from './services/backendConfig';
 import { useGeminiLiveVoice } from './hooks/useGeminiLiveVoice';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { CounterWorkspace } from './components/CounterWorkspace';
@@ -351,9 +357,60 @@ function BolKhataApp() {
     }
   };
 
+  const handleQuickLookup = async (customerQuery?: string, itemQuery?: string) => {
+    if (!user) return null;
+    const t0 = performance.now();
+    const res = await lookupCustomerAndStock(user.uid, {
+      customer_name: customerQuery,
+      item_name: itemQuery,
+    });
+    const elapsed = Math.round(performance.now() - t0);
+    await logAgentTrace(
+      user.uid,
+      'transcript_quick_lookup',
+      'TOOL_CALL',
+      'Transcript Quick Lookup',
+      `Re-checked ${[customerQuery, itemQuery].filter(Boolean).join(' · ') || 'catalog'}`,
+      elapsed
+    );
+    return res;
+  };
+
+  const handleImportCustomers = async (rows: CsvCustomerInput[]) => {
+    if (!user) return { imported: 0 };
+    const t0 = performance.now();
+    const res = await importCustomersBatch(user.uid, rows);
+    const elapsed = Math.round(performance.now() - t0);
+    await logAgentTrace(
+      user.uid,
+      'csv_import',
+      'EXECUTED',
+      'Customer CSV Imported',
+      `Bootstrapped ${res.imported} Khata accounts via CSV import`,
+      elapsed
+    );
+    return res;
+  };
+
+  const handleImportInventory = async (rows: CsvInventoryInput[]) => {
+    if (!user) return { imported: 0 };
+    const t0 = performance.now();
+    const res = await importInventoryBatch(user.uid, rows);
+    const elapsed = Math.round(performance.now() - t0);
+    await logAgentTrace(
+      user.uid,
+      'csv_import',
+      'EXECUTED',
+      'Inventory CSV Imported',
+      `Bootstrapped ${res.imported} godown SKUs via CSV import`,
+      elapsed
+    );
+    return res;
+  };
+
   const handleSubmitSentiment = async (rating: number, comment: string) => {
     if (!user) return;
-    const res = await fetch('/api/sentiment/analyze', {
+    const res = await fetch(getApiUrl('/api/sentiment/analyze'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ rating, comment }),
@@ -679,6 +736,7 @@ function BolKhataApp() {
                 customers={customers}
                 activeBillPreview={voice.activeBillPreview}
                 onRecordJamaPayment={handleRecordJamaPayment}
+                onQuickLookup={handleQuickLookup}
                 onManualUndo={handleManualUndo}
                 undoBusy={undoBusy}
               />
@@ -696,6 +754,8 @@ function BolKhataApp() {
                 onMarkRestockReceived={async (id) => {
                   await updateRestockStatus(id, 'RECEIVED');
                 }}
+                onImportCustomers={handleImportCustomers}
+                onImportInventory={handleImportInventory}
               />
             )}
 

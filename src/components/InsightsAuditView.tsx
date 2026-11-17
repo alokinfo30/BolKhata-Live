@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Copy, Check, MessageSquare, Sparkles, Star } from 'lucide-react';
+import { getApiUrl } from '../services/backendConfig';
 import type {
   AgentTraceItem,
   ApprovalRequest,
@@ -61,7 +62,7 @@ export const InsightsAuditView: React.FC<InsightsAuditViewProps> = ({
     setLoadingReport(true);
     setReportError(null);
     try {
-      const res = await fetch('/api/insights/generate', {
+      const res = await fetch(getApiUrl('/api/insights/generate'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

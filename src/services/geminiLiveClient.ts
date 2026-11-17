@@ -1,4 +1,5 @@
 import { executeBackendTool } from './toolHandlers';
+import { getWebSocketUrl, isStaticHostingWithoutBackend } from './backendConfig';
 import type { ActiveBillPreview, ApprovalRequest, TxType } from '../types';
 
 const WORKLET_CODE = `
@@ -328,8 +329,15 @@ export class GeminiLiveClient {
       this.rafLevelId = requestAnimationFrame(tickLevel);
     }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/live`);
+    if (isStaticHostingWithoutBackend()) {
+      this.disconnect();
+      throw new Error(
+        `Live voice WebSocket (/ws/live) is not hosted on ${window.location.hostname}. Enter your Cloud Run backend URL below (or set VITE_API_BASE_URL) to stream live audio.`
+      );
+    }
+
+    const wsUrl = getWebSocketUrl('/ws/live');
+    const ws = new WebSocket(wsUrl);
     this.ws = ws;
 
     ws.onopen = () => {
@@ -375,7 +383,9 @@ export class GeminiLiveClient {
     };
 
     ws.onerror = () => {
-      this.callbacks.onError('WebSocket connection to counter voice server failed.');
+      this.callbacks.onError(
+        `WebSocket connection to ${wsUrl} failed. Verify your Express/Cloud Run backend URL and try again.`
+      );
       this.disconnect();
     };
 

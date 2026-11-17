@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
-import { Check, Search } from 'lucide-react';
+import { Check, Search, Upload } from 'lucide-react';
+import { CsvImportModal } from './CsvImportModal';
+import type { CsvCustomerInput, CsvInventoryInput } from '../services/firestoreOps';
 import type {
   Customer,
   InventoryItem,
@@ -16,6 +18,8 @@ interface KhataInventoryViewProps {
   onToggleLowStockOnly: (val: boolean) => void;
   onRecordJamaPayment: (customer: Customer, amount: number) => Promise<void>;
   onMarkRestockReceived: (restockId: string) => Promise<void>;
+  onImportCustomers: (rows: CsvCustomerInput[]) => Promise<{ imported: number }>;
+  onImportInventory: (rows: CsvInventoryInput[]) => Promise<{ imported: number }>;
 }
 
 function formatInr(amount: number): string {
@@ -31,12 +35,15 @@ export const KhataInventoryView: React.FC<KhataInventoryViewProps> = ({
   onToggleLowStockOnly,
   onRecordJamaPayment,
   onMarkRestockReceived,
+  onImportCustomers,
+  onImportInventory,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [txFilter, setTxFilter] = useState<'ALL' | 'UDHAAR' | 'JAMA' | 'UNDONE'>('ALL');
   const [jamaCustomer, setJamaCustomer] = useState<Customer | null>(null);
   const [jamaAmount, setJamaAmount] = useState('');
   const [jamaBusy, setJamaBusy] = useState(false);
+  const [showImport, setShowImport] = useState(false);
 
   const q = searchQuery.trim().toLowerCase();
 
@@ -102,23 +109,48 @@ export const KhataInventoryView: React.FC<KhataInventoryViewProps> = ({
           />
         </div>
 
-        <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
-          {(['ALL', 'UDHAAR', 'JAMA', 'UNDONE'] as const).map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              onClick={() => setTxFilter(tab)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
-                txFilter === tab
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              {tab === 'ALL' ? 'All Entries' : tab}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
+            {(['ALL', 'UDHAAR', 'JAMA', 'UNDONE'] as const).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setTxFilter(tab)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                  txFilter === tab
+                    ? 'bg-white text-slate-900 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                {tab === 'ALL' ? 'All Entries' : tab}
+              </button>
+            ))}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setShowImport(!showImport)}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+              showImport
+                ? 'bg-blue-700 border-blue-700 text-white'
+                : 'bg-white border-slate-200 text-slate-800 hover:bg-slate-50'
+            }`}
+          >
+            <Upload className="w-3.5 h-3.5" />
+            Import Data
+          </button>
         </div>
       </div>
+
+      {showImport && (
+        <CsvImportModal
+          existingCustomers={customers}
+          existingInventory={inventory}
+          onImportCustomers={onImportCustomers}
+          onImportInventory={onImportInventory}
+          onClose={() => setShowImport(false)}
+        />
+      )}
 
       {/* Inline Jama Payment Form */}
       {jamaCustomer && (

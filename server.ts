@@ -173,8 +173,19 @@ ${catalogContext || 'Use lookup_customer_and_stock to inspect live customer bala
 
 async function startServer(): Promise<void> {
   const app = express();
-  app.use((_req: Request, res: Response, next) => {
+  app.use((req: Request, res: Response, next) => {
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+    const origin = req.headers.origin;
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+    }
+    if (req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
     next();
   });
   app.use(express.json({ limit: '2mb' }));

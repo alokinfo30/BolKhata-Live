@@ -876,3 +876,140 @@ export async function logVoiceTranscript(
   }
 }
 
+export interface CsvCustomerInput {
+  name: string;
+  phone?: string;
+  location?: string;
+  current_udhaar_balance?: number;
+  credit_limit?: number;
+}
+
+export interface CsvInventoryInput {
+  sku?: string;
+  name: string;
+  unit?: string;
+  aliases?: string[];
+  stock_qty?: number;
+  unit_price: number;
+  reorder_threshold?: number;
+  supplier_name?: string;
+}
+
+export async function importCustomersBatch(
+  ownerId: string,
+  rows: CsvCustomerInput[]
+): Promise<{ imported: number }> {
+  if (rows.length === 0) return { imported: 0 };
+  try {
+    let imported = 0;
+    const CHUNK = 400;
+    for (let start = 0; start < rows.length; start += CHUNK) {
+      const slice = rows.slice(start, start + CHUNK);
+      const batch = writeBatch(db);
+      const now = serverTimestamp();
+
+      for (const row of slice) {
+        const cleanName = clampStr(row.name?.trim() || '', 120);
+        if (!cleanName) continue;
+        const rawPhone = (row.phone ?? '').trim();
+        const cleanPhone = rawPhone.length >= 5 ? clampStr(rawPhone, 30) : '0000000000';
+        const cleanLocation = clampStr(row.location?.trim() || 'Local Market', 120);
+        const balance = Math.max(0, Number(row.current_udhaar_balance) || 0);
+        const limitVal = Math.max(0, Number(row.credit_limit) || 50000);
+
+        const id = makeSafeId('cust');
+        batch.set(doc(db, 'customers', id), {
+          ownerId,
+          name: cleanName,
+          phone: cleanPhone,
+          location: cleanLocation,
+          current_udhaar_balance: balance,
+          credit_limit: limitVal,
+          createdAt: now,
+          updatedAt: now,
+        });
+        imported += 1;
+      }
+
+      await batch.commit();
+    }
+    return { imported };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, 'customers/csv_import');
+  }
+}
+
+export async function importInventoryBatch(
+  ownerId: string,
+  rows: CsvInventoryInput[]
+): Promise<{ imported: number }> {
+  if (rows.length === 0) return { imported: 0 };
+  try {
+    let imported = 0;
+    const CHUNK = 400;
+    for (let start = 0; start < rows.length; start += CHUNK) {
+      const slice = rows.slice(start, start + CHUNK);
+      const batch = writeBatch(db);
+      const now = serverTimestamp();
+
+      for (let i = 0; i < slice.length; i++) {
+        const row = slice[i];
+        const cleanName = clampStr(row.name?.trim() || '', 140);
+        const unitPrice = Number(row.unit_price);
+        if (!cleanName || !Number.isFinite(unitPrice) || unitPrice <= 0) continue;
+
+        const rawSku = (row.sku ?? '')
+          .trim()
+          .toUpperCase()
+          .replace(/[^A-Z0-9_-]/g, '_');
+        const cleanSku =
+          rawSku.length >= 2
+            ? rawSku.slice(0, 64)
+            : `SKU_${(start + i + 1).toString().padStart(3, '0')}_${Date.now()
+                .toString(36)
+                .slice(-3)
+                .toUpperCase()}`;
+
+        const cleanUnit = clampStr(row.unit?.trim() || 'units', 32);
+        const cleanedAliases = (row.aliases ?? [])
+          .map((a) => clampStr(a, 64))
+          .filter((a) => a.length > 0)
+          .slice(0, 10);
+        const finalAliases =
+          cleanedAliases.length > 0
+            ? cleanedAliases
+            : [clampStr(cleanName.toLowerCase(), 64) || 'item'];
+
+        const stockQty = Math.max(0, Number(row.stock_qty) || 0);
+        const reorderThreshold = Math.max(0, Number(row.reorder_threshold) || 0);
+        const supplierName = clampStr(
+          row.supplier_name?.trim() || 'Wholesale Distributor',
+          120
+        );
+
+        const id = makeSafeId('inv');
+        batch.set(doc(db, 'inventory', id), {
+          ownerId,
+          sku: cleanSku,
+          name: cleanName,
+          unit: cleanUnit,
+          aliases: finalAliases,
+          stock_qty: stockQty,
+          unit_price: unitPrice,
+          reorder_threshold: reorderThreshold,
+          supplier_name: supplierName,
+          createdAt: now,
+          updatedAt: now,
+        });
+        imported += 1;
+      }
+
+      await batch.commit();
+    }
+    return { imported };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, 'inventory/csv_import');
+  }
+}
+
+
