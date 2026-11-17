@@ -1,0 +1,543 @@
+{
+  "entities": {
+    "Customer": {
+      "title": "Customer",
+      "description": "Wholesale/kirana customer account with Udhaar credit balance and limit.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the shop owner."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Customer store or trader name."
+        },
+        "phone": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 30,
+          "description": "Contact phone number (PII)."
+        },
+        "location": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Market or area name."
+        },
+        "current_udhaar_balance": {
+          "type": "number",
+          "description": "Current outstanding credit balance in INR."
+        },
+        "credit_limit": {
+          "type": "number",
+          "description": "Maximum allowed credit limit in INR."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "name",
+        "phone",
+        "location",
+        "current_udhaar_balance",
+        "credit_limit",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "InventoryItem": {
+      "title": "InventoryItem",
+      "description": "Wholesale stock item with regional aliases, unit price, and reorder threshold.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "sku": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "aliases": {
+          "type": "array",
+          "description": "Hinglish/regional search aliases (max 10)."
+        },
+        "stock_qty": {
+          "type": "number"
+        },
+        "unit_price": {
+          "type": "number"
+        },
+        "reorder_threshold": {
+          "type": "number"
+        },
+        "supplier_name": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "sku",
+        "name",
+        "unit",
+        "aliases",
+        "stock_qty",
+        "unit_price",
+        "reorder_threshold",
+        "supplier_name",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Ledger and inventory transaction with snapshot for one-command voice undo.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "tx_id": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "customer_id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "customer_name": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "item_sku": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "item_name": {
+          "type": "string",
+          "maxLength": 140
+        },
+        "unit": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "qty": {
+          "type": "number"
+        },
+        "unit_price": {
+          "type": "number"
+        },
+        "total_amount": {
+          "type": "number"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["UDHAAR", "JAMA", "CASH_SALE"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["COMPLETED", "UNDONE", "PENDING_APPROVAL"]
+        },
+        "previous_balance": {
+          "type": "number"
+        },
+        "previous_stock": {
+          "type": "number"
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "tx_id",
+        "customer_id",
+        "customer_name",
+        "item_sku",
+        "item_name",
+        "unit",
+        "qty",
+        "unit_price",
+        "total_amount",
+        "type",
+        "status",
+        "previous_balance",
+        "previous_stock",
+        "note",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Approval": {
+      "title": "Approval",
+      "description": "Human-in-the-Loop (HITL) manager override request for credit breaches or high-value orders.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "approval_id": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "customer_id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "customer_name": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "item_sku": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "item_name": {
+          "type": "string",
+          "maxLength": 140
+        },
+        "unit": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "qty": {
+          "type": "number"
+        },
+        "total_amount": {
+          "type": "number"
+        },
+        "tx_type": {
+          "type": "string",
+          "enum": ["UDHAAR", "JAMA", "CASH_SALE"]
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "status": {
+          "type": "string",
+          "enum": ["PENDING", "APPROVED", "REJECTED"]
+        },
+        "approved_by": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "approval_id",
+        "customer_id",
+        "customer_name",
+        "item_sku",
+        "item_name",
+        "unit",
+        "qty",
+        "total_amount",
+        "tx_type",
+        "reason",
+        "status",
+        "approved_by",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "RestockOrder": {
+      "title": "RestockOrder",
+      "description": "Automated distributor purchase order triggered when stock falls below threshold.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "po_number": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "item_sku": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "item_name": {
+          "type": "string",
+          "maxLength": 140
+        },
+        "supplier_name": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "order_qty": {
+          "type": "number"
+        },
+        "unit": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "estimated_cost": {
+          "type": "number"
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "status": {
+          "type": "string",
+          "enum": ["ORDERED", "RECEIVED", "CANCELLED"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "po_number",
+        "item_sku",
+        "item_name",
+        "supplier_name",
+        "order_qty",
+        "unit",
+        "estimated_cost",
+        "reason",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "SentimentLog": {
+      "title": "SentimentLog",
+      "description": "Real-time counter operator feedback and sentiment telemetry.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "rating": {
+          "type": "number"
+        },
+        "sentiment": {
+          "type": "string",
+          "enum": ["POSITIVE", "NEUTRAL", "FRICTION"]
+        },
+        "category": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "comment": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "ai_summary": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "source": {
+          "type": "string",
+          "enum": ["VOICE", "UI"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "rating",
+        "sentiment",
+        "category",
+        "comment",
+        "ai_summary",
+        "source",
+        "createdAt"
+      ]
+    },
+    "AgentTrace": {
+      "title": "AgentTrace",
+      "description": "Real-time agent workflow execution trace and latency audit entry.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "session_id": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "step_type": {
+          "type": "string",
+          "enum": [
+            "VOICE_INTENT",
+            "TOOL_CALL",
+            "POLICY_CHECK",
+            "HITL_PAUSE",
+            "EXECUTED",
+            "UNDO",
+            "RESTOCK",
+            "ERROR"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "detail": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "latency_ms": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "session_id",
+        "step_type",
+        "title",
+        "detail",
+        "latency_ms",
+        "createdAt"
+      ]
+    },
+    "VoiceTranscript": {
+      "title": "VoiceTranscript",
+      "description": "Persisted voice counter transcript turn with role and timestamp.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "session_id": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "role": {
+          "type": "string",
+          "enum": ["user", "agent", "system"]
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "session_id",
+        "role",
+        "text",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/customers/{customerId}": {
+      "schema": { "$ref": "#/entities/Customer" },
+      "description": "Customer Khata ledger accounts owned by the authenticated shopkeeper."
+    },
+    "/inventory/{itemId}": {
+      "schema": { "$ref": "#/entities/InventoryItem" },
+      "description": "Wholesale inventory SKUs and stock counts owned by the authenticated shopkeeper."
+    },
+    "/transactions/{transactionId}": {
+      "schema": { "$ref": "#/entities/Transaction" },
+      "description": "Immutable-by-default transaction ledger with undo rollback snapshots."
+    },
+    "/approvals/{approvalId}": {
+      "schema": { "$ref": "#/entities/Approval" },
+      "description": "HITL Manager approval requests for credit breaches and high-value orders."
+    },
+    "/restocks/{restockId}": {
+      "schema": { "$ref": "#/entities/RestockOrder" },
+      "description": "Automated distributor purchase orders."
+    },
+    "/sentiment_logs/{logId}": {
+      "schema": { "$ref": "#/entities/SentimentLog" },
+      "description": "Real-time user feedback and sentiment entries."
+    },
+    "/agent_traces/{traceId}": {
+      "schema": { "$ref": "#/entities/AgentTrace" },
+      "description": "Real-time agent workflow execution traces and latency records."
+    },
+    "/voice_transcripts/{transcriptId}": {
+      "schema": { "$ref": "#/entities/VoiceTranscript" },
+      "description": "Persisted timestamped voice counter conversation transcripts."
+    }
+  }
+}

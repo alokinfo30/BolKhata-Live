@@ -1,0 +1,370 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwnerOfExisting() {
+      return isVerifiedUser() && existing().ownerId == request.auth.uid;
+    }
+
+    function isValidCustomer(data) {
+      return data.keys().hasAll([
+          'ownerId', 'name', 'phone', 'location',
+          'current_udhaar_balance', 'credit_limit', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'name', 'phone', 'location',
+          'current_udhaar_balance', 'credit_limit', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.phone is string && data.phone.size() >= 5 && data.phone.size() <= 30
+        && data.location is string && data.location.size() >= 1 && data.location.size() <= 120
+        && data.current_udhaar_balance is number && data.current_udhaar_balance >= 0
+        && data.credit_limit is number && data.credit_limit >= 0
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidInventoryItem(data) {
+      return data.keys().hasAll([
+          'ownerId', 'sku', 'name', 'unit', 'aliases',
+          'stock_qty', 'unit_price', 'reorder_threshold', 'supplier_name',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'sku', 'name', 'unit', 'aliases',
+          'stock_qty', 'unit_price', 'reorder_threshold', 'supplier_name',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && isValidId(data.sku) && data.sku.size() >= 2 && data.sku.size() <= 64
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 140
+        && data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 32
+        && data.aliases is list && data.aliases.size() >= 1 && data.aliases.size() <= 10
+        && data.aliases[0] is string && data.aliases[0].size() >= 1 && data.aliases[0].size() <= 64
+        && data.stock_qty is number && data.stock_qty >= 0
+        && data.unit_price is number && data.unit_price > 0
+        && data.reorder_threshold is number && data.reorder_threshold >= 0
+        && data.supplier_name is string && data.supplier_name.size() >= 1 && data.supplier_name.size() <= 120
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTransaction(data) {
+      return data.keys().hasAll([
+          'ownerId', 'tx_id', 'customer_id', 'customer_name',
+          'item_sku', 'item_name', 'unit', 'qty', 'unit_price',
+          'total_amount', 'type', 'status', 'previous_balance',
+          'previous_stock', 'note', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'tx_id', 'customer_id', 'customer_name',
+          'item_sku', 'item_name', 'unit', 'qty', 'unit_price',
+          'total_amount', 'type', 'status', 'previous_balance',
+          'previous_stock', 'note', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && isValidId(data.tx_id) && data.tx_id.size() <= 64
+        && isValidId(data.customer_id)
+        && data.customer_name is string && data.customer_name.size() >= 1 && data.customer_name.size() <= 120
+        && data.item_sku is string && data.item_sku.size() >= 1 && data.item_sku.size() <= 64
+        && data.item_name is string && data.item_name.size() >= 1 && data.item_name.size() <= 140
+        && data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 32
+        && data.qty is number && data.qty >= 0
+        && data.unit_price is number && data.unit_price >= 0
+        && data.total_amount is number && data.total_amount >= 0
+        && data.type in ['UDHAAR', 'JAMA', 'CASH_SALE']
+        && data.status in ['COMPLETED', 'UNDONE', 'PENDING_APPROVAL']
+        && data.previous_balance is number && data.previous_balance >= 0
+        && data.previous_stock is number && data.previous_stock >= 0
+        && data.note is string && data.note.size() <= 300
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidApproval(data) {
+      return data.keys().hasAll([
+          'ownerId', 'approval_id', 'customer_id', 'customer_name',
+          'item_sku', 'item_name', 'unit', 'qty', 'total_amount',
+          'tx_type', 'reason', 'status', 'approved_by', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'approval_id', 'customer_id', 'customer_name',
+          'item_sku', 'item_name', 'unit', 'qty', 'total_amount',
+          'tx_type', 'reason', 'status', 'approved_by', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && isValidId(data.approval_id) && data.approval_id.size() <= 64
+        && isValidId(data.customer_id)
+        && data.customer_name is string && data.customer_name.size() >= 1 && data.customer_name.size() <= 120
+        && data.item_sku is string && data.item_sku.size() >= 1 && data.item_sku.size() <= 64
+        && data.item_name is string && data.item_name.size() >= 1 && data.item_name.size() <= 140
+        && data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 32
+        && data.qty is number && data.qty >= 0
+        && data.total_amount is number && data.total_amount >= 0
+        && data.tx_type in ['UDHAAR', 'JAMA', 'CASH_SALE']
+        && data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 300
+        && data.status in ['PENDING', 'APPROVED', 'REJECTED']
+        && data.approved_by is string && data.approved_by.size() <= 120
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidRestockOrder(data) {
+      return data.keys().hasAll([
+          'ownerId', 'po_number', 'item_sku', 'item_name',
+          'supplier_name', 'order_qty', 'unit', 'estimated_cost',
+          'reason', 'status', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'po_number', 'item_sku', 'item_name',
+          'supplier_name', 'order_qty', 'unit', 'estimated_cost',
+          'reason', 'status', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.po_number is string && data.po_number.size() >= 2 && data.po_number.size() <= 32
+        && data.item_sku is string && data.item_sku.size() >= 1 && data.item_sku.size() <= 64
+        && data.item_name is string && data.item_name.size() >= 1 && data.item_name.size() <= 140
+        && data.supplier_name is string && data.supplier_name.size() >= 1 && data.supplier_name.size() <= 120
+        && data.order_qty is number && data.order_qty > 0
+        && data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 32
+        && data.estimated_cost is number && data.estimated_cost >= 0
+        && data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 240
+        && data.status in ['ORDERED', 'RECEIVED', 'CANCELLED']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSentimentLog(data) {
+      return data.keys().hasAll([
+          'ownerId', 'rating', 'sentiment', 'category',
+          'comment', 'ai_summary', 'source', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'rating', 'sentiment', 'category',
+          'comment', 'ai_summary', 'source', 'createdAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.rating is number && data.rating >= 1 && data.rating <= 5
+        && data.sentiment in ['POSITIVE', 'NEUTRAL', 'FRICTION']
+        && data.category is string && data.category.size() >= 1 && data.category.size() <= 64
+        && data.comment is string && data.comment.size() >= 1 && data.comment.size() <= 500
+        && data.ai_summary is string && data.ai_summary.size() <= 300
+        && data.source in ['VOICE', 'UI']
+        && data.createdAt is timestamp;
+    }
+
+    function isValidAgentTrace(data) {
+      return data.keys().hasAll([
+          'ownerId', 'session_id', 'step_type', 'title',
+          'detail', 'latency_ms', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'session_id', 'step_type', 'title',
+          'detail', 'latency_ms', 'createdAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.session_id is string && data.session_id.size() >= 1 && data.session_id.size() <= 64
+        && data.step_type in [
+          'VOICE_INTENT', 'TOOL_CALL', 'POLICY_CHECK',
+          'HITL_PAUSE', 'EXECUTED', 'UNDO', 'RESTOCK', 'ERROR'
+        ]
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.detail is string && data.detail.size() <= 500
+        && data.latency_ms is number && data.latency_ms >= 0
+        && data.createdAt is timestamp;
+    }
+
+    function isValidVoiceTranscript(data) {
+      return data.keys().hasAll([
+          'ownerId', 'session_id', 'role', 'text', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'session_id', 'role', 'text', 'createdAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.session_id is string && data.session_id.size() >= 1 && data.session_id.size() <= 64
+        && data.role in ['user', 'agent', 'system']
+        && data.text is string && data.text.size() >= 1 && data.text.size() <= 1000
+        && data.createdAt is timestamp;
+    }
+
+    // Customers Collection (PII isolated to ownerId)
+    match /customers/{customerId} {
+      allow get: if isValidId(customerId) && isOwnerOfExisting();
+      allow list: if isVerifiedUser() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerifiedUser()
+        && isValidId(customerId)
+        && isValidCustomer(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isOwnerOfExisting()
+        && isValidId(customerId)
+        && isValidCustomer(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly(['current_udhaar_balance', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['credit_limit', 'phone', 'location', 'updatedAt'])
+        );
+      allow delete: if false;
+    }
+
+    // Inventory Collection
+    match /inventory/{itemId} {
+      allow get: if isValidId(itemId) && isOwnerOfExisting();
+      allow list: if isVerifiedUser() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerifiedUser()
+        && isValidId(itemId)
+        && isValidInventoryItem(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isOwnerOfExisting()
+        && isValidId(itemId)
+        && isValidInventoryItem(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly(['stock_qty', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['unit_price', 'reorder_threshold', 'updatedAt'])
+        );
+      allow delete: if false;
+    }
+
+    // Transactions Ledger Collection
+    match /transactions/{transactionId} {
+      allow get: if isValidId(transactionId) && isOwnerOfExisting();
+      allow list: if isVerifiedUser() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerifiedUser()
+        && isValidId(transactionId)
+        && isValidTransaction(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/customers/$(incoming().customer_id))
+        && get(/databases/$(database)/documents/customers/$(incoming().customer_id)).data.ownerId == request.auth.uid;
+      allow update: if isOwnerOfExisting()
+        && isValidId(transactionId)
+        && isValidTransaction(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && existing().status == 'COMPLETED'
+        && incoming().status == 'UNDONE'
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // Approvals (HITL) Collection
+    match /approvals/{approvalId} {
+      allow get: if isValidId(approvalId) && isOwnerOfExisting();
+      allow list: if isVerifiedUser() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerifiedUser()
+        && isValidId(approvalId)
+        && isValidApproval(incoming())
+        && incoming().status == 'PENDING'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/customers/$(incoming().customer_id))
+        && get(/databases/$(database)/documents/customers/$(incoming().customer_id)).data.ownerId == request.auth.uid;
+      allow update: if isOwnerOfExisting()
+        && isValidId(approvalId)
+        && isValidApproval(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && existing().status == 'PENDING'
+        && incoming().status in ['APPROVED', 'REJECTED']
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'approved_by', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // Restock Orders Collection
+    match /restocks/{restockId} {
+      allow get: if isValidId(restockId) && isOwnerOfExisting();
+      allow list: if isVerifiedUser() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerifiedUser()
+        && isValidId(restockId)
+        && isValidRestockOrder(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isOwnerOfExisting()
+        && isValidId(restockId)
+        && isValidRestockOrder(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && existing().status == 'ORDERED'
+        && incoming().status in ['RECEIVED', 'CANCELLED']
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // Sentiment & User Feedback Collection
+    match /sentiment_logs/{logId} {
+      allow get: if isValidId(logId) && isOwnerOfExisting();
+      allow list: if isVerifiedUser() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerifiedUser()
+        && isValidId(logId)
+        && isValidSentimentLog(incoming())
+        && incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    // Agent Execution Traces Collection
+    match /agent_traces/{traceId} {
+      allow get: if isValidId(traceId) && isOwnerOfExisting();
+      allow list: if isVerifiedUser() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerifiedUser()
+        && isValidId(traceId)
+        && isValidAgentTrace(incoming())
+        && incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    // Persisted Voice Transcripts Collection
+    match /voice_transcripts/{transcriptId} {
+      allow get: if isValidId(transcriptId) && isOwnerOfExisting();
+      allow list: if isVerifiedUser() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerifiedUser()
+        && isValidId(transcriptId)
+        && isValidVoiceTranscript(incoming())
+        && incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
+  }
+}

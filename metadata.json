@@ -1,0 +1,6 @@
+{
+  "name": "BolKhata Live",
+  "description": "Real-time Hinglish voice operations agent for Indian wholesale & kirana counters with live Khata ledger, inventory tracking, and HITL approvals.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
