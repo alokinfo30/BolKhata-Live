@@ -1,5 +1,5 @@
 import { executeBackendTool } from './toolHandlers';
-import type { ApprovalRequest } from '../types';
+import type { ActiveBillPreview, ApprovalRequest, TxType } from '../types';
 
 const WORKLET_CODE = `
 class BolKhataPcmProcessor extends AudioWorkletProcessor {
@@ -70,6 +70,7 @@ export interface GeminiLiveClientCallbacks {
   onLatencySample: (ms: number) => void;
   onMicLevel: (rms: number) => void;
   onAgentSpeakingChange: (speaking: boolean) => void;
+  onBillPreview?: (bill: ActiveBillPreview) => void;
   onError: (message: string) => void;
 }
 
@@ -249,6 +250,9 @@ export class GeminiLiveClient {
     this.rafLevelId = requestAnimationFrame(tickLevel);
   }
 
+  private lastLookupCustomer: { id: string; name: string } | null = null;
+  private lastLookupItem: { sku: string; name: string; unit: string } | null = null;
+
   private async dispatchToolCall(
     id: string,
     name: string,
@@ -256,6 +260,61 @@ export class GeminiLiveClient {
   ): Promise<void> {
     if (!this.ownerId || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     const response = await executeBackendTool(this.ownerId, this.sessionId, name, args);
+
+    if (name === 'lookup_customer_and_stock') {
+      const fc = response.found_customer as { customer_id?: string; name?: string } | null;
+      const fi = response.found_item as { sku?: string; name?: string; unit?: string } | null;
+      if (fc?.customer_id && fc?.name) {
+        this.lastLookupCustomer = { id: fc.customer_id, name: fc.name };
+      }
+      if (fi?.sku && fi?.name) {
+        this.lastLookupItem = { sku: fi.sku, name: fi.name, unit: fi.unit || 'units' };
+      }
+    } else if (name === 'check_business_policy' && this.callbacks.onBillPreview) {
+      const totalAmount = Number(args.total_amount ?? 0);
+      if (totalAmount > 0 && this.lastLookupCustomer) {
+        this.callbacks.onBillPreview({
+          customerId: String(args.customer_id || this.lastLookupCustomer.id),
+          customerName: this.lastLookupCustomer.name,
+          itemName: this.lastLookupItem?.name || String(args.item_sku || 'Wholesale Order'),
+          qty: Number(args.qty ?? 0),
+          unit: this.lastLookupItem?.unit || 'units',
+          totalAmount,
+          txType: String(args.tx_type || 'UDHAAR').toUpperCase() as TxType,
+          status: response.requires_human_approval ? 'PENDING_APPROVAL' : 'READBACK',
+          updatedAt: Date.now(),
+        });
+      }
+    } else if (name === 'request_human_approval' && this.callbacks.onBillPreview) {
+      this.callbacks.onBillPreview({
+        customerId: String(args.customer_id || ''),
+        customerName: String(args.customer_name || 'Customer'),
+        itemName: String(args.item_name || 'Wholesale Order'),
+        qty: Number(args.qty ?? 0),
+        unit: String(args.unit || 'units'),
+        totalAmount: Number(args.total_amount ?? 0),
+        txType: String(args.tx_type || 'UDHAAR').toUpperCase() as TxType,
+        status: 'PENDING_APPROVAL',
+        updatedAt: Date.now(),
+      });
+    } else if (
+      name === 'execute_ledger_and_inventory_tx' &&
+      response.executed &&
+      this.callbacks.onBillPreview
+    ) {
+      this.callbacks.onBillPreview({
+        customerId: String(args.customer_id || ''),
+        customerName: String(response.customer_name || this.lastLookupCustomer?.name || 'Customer'),
+        itemName: String(response.item_name || 'Wholesale Order'),
+        qty: Number(response.qty ?? 0),
+        unit: String(response.unit || 'units'),
+        totalAmount: Number(args.total_amount ?? 0),
+        txType: String(args.tx_type || 'UDHAAR').toUpperCase() as TxType,
+        status: 'CONFIRMED',
+        updatedAt: Date.now(),
+      });
+    }
+
     this.turnT0 = performance.now();
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(

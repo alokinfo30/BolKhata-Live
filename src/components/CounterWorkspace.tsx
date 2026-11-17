@@ -3,9 +3,11 @@ import {
   AlertTriangle,
   Check,
   Clock,
+  Copy,
   Mic,
   MicOff,
   PackageCheck,
+  QrCode,
   RotateCcw,
   Send,
   ShieldAlert,
@@ -13,10 +15,13 @@ import {
   X,
 } from 'lucide-react';
 import { Timestamp } from 'firebase/firestore';
+import { QRCodeSVG } from 'qrcode.react';
 import { VoiceWaveform } from './VoiceWaveform';
 import type {
+  ActiveBillPreview,
   AgentTraceItem,
   ApprovalRequest,
+  Customer,
   InventoryItem,
   LedgerTransaction,
   PersistedVoiceTranscript,
@@ -45,6 +50,9 @@ interface CounterWorkspaceProps {
   traces: AgentTraceItem[];
   transactions: LedgerTransaction[];
   inventory: InventoryItem[];
+  customers: Customer[];
+  activeBillPreview: ActiveBillPreview | null;
+  onRecordJamaPayment: (customer: Customer, amount: number) => Promise<void>;
   onManualUndo: () => Promise<void>;
   undoBusy: boolean;
 }
@@ -100,11 +108,37 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
   traces,
   transactions,
   inventory,
+  customers,
+  activeBillPreview,
+  onRecordJamaPayment,
   onManualUndo,
   undoBusy,
 }) => {
   const [commandInput, setCommandInput] = useState('');
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+
+  const [upiVpa, setUpiVpa] = useState<string>(() => {
+    try {
+      return localStorage.getItem('bolkhata_upi_vpa') || 'bolkhata.store@okaxis';
+    } catch {
+      return 'bolkhata.store@okaxis';
+    }
+  });
+  const [merchantName, setMerchantName] = useState<string>(() => {
+    try {
+      return localStorage.getItem('bolkhata_merchant_name') || 'BolKhata Wholesale';
+    } catch {
+      return 'BolKhata Wholesale';
+    }
+  });
+  const [editingUpi, setEditingUpi] = useState(false);
+  const [qrCustomerId, setQrCustomerId] = useState('');
+  const [qrAmount, setQrAmount] = useState('');
+  const [qrNote, setQrNote] = useState('');
+  const [qrStageLabel, setQrStageLabel] = useState<string>('READY');
+  const [qrCopied, setQrCopied] = useState(false);
+  const [qrPayingBusy, setQrPayingBusy] = useState(false);
+  const [qrPaidNotice, setQrPaidNotice] = useState<string | null>(null);
 
   const combinedTranscripts = [
     ...persistedTranscripts.map((t) => ({
@@ -130,6 +164,88 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
   const pendingApprovals = approvals.filter((a) => a.status === 'PENDING');
   const lowStockItems = inventory.filter((i) => i.stock_qty < i.reorder_threshold);
   const completedTxs = transactions.filter((t) => t.status === 'COMPLETED');
+
+  // Sync UPI QR code amount & bill metadata automatically on active voice read-back or confirmation
+  useEffect(() => {
+    if (activeBillPreview && activeBillPreview.totalAmount > 0) {
+      setQrCustomerId(activeBillPreview.customerId || '');
+      setQrAmount(String(activeBillPreview.totalAmount));
+      setQrNote(
+        `${activeBillPreview.customerName} - ${
+          activeBillPreview.qty > 0
+            ? `${activeBillPreview.qty} ${activeBillPreview.unit} ${activeBillPreview.itemName}`
+            : activeBillPreview.itemName
+        }`
+      );
+      setQrStageLabel(activeBillPreview.status);
+      setQrPaidNotice(null);
+    }
+  }, [activeBillPreview]);
+
+  // Fallback to latest completed transaction if no live read-back preview is active yet
+  useEffect(() => {
+    if (!activeBillPreview && !qrAmount && completedTxs.length > 0) {
+      const latest = completedTxs[0];
+      if (latest.total_amount > 0) {
+        setQrCustomerId(latest.customer_id);
+        setQrAmount(String(latest.total_amount));
+        setQrNote(
+          `${latest.customer_name} - ${
+            latest.qty > 0 ? `${latest.qty} ${latest.unit} ${latest.item_name}` : latest.item_name
+          }`
+        );
+        setQrStageLabel('LATEST TX');
+      }
+    }
+  }, [activeBillPreview, completedTxs, qrAmount]);
+
+  const parsedQrAmount = Math.max(0, Number(qrAmount) || 0);
+  const selectedQrCustomer = customers.find((c) => c.id === qrCustomerId) || null;
+  const cleanVpa = upiVpa.trim() || 'bolkhata.store@okaxis';
+  const cleanMerchant = merchantName.trim() || 'BolKhata Wholesale';
+  const cleanNote = (qrNote.trim() || 'BolKhata Counter Bill').slice(0, 80);
+  const upiUri =
+    parsedQrAmount > 0
+      ? `upi://pay?pa=${encodeURIComponent(cleanVpa)}&pn=${encodeURIComponent(
+          cleanMerchant
+        )}&am=${parsedQrAmount.toFixed(2)}&cu=INR&tn=${encodeURIComponent(cleanNote)}`
+      : `upi://pay?pa=${encodeURIComponent(cleanVpa)}&pn=${encodeURIComponent(
+          cleanMerchant
+        )}&cu=INR&tn=${encodeURIComponent(cleanNote)}`;
+
+  const handleSaveUpiSettings = () => {
+    try {
+      localStorage.setItem('bolkhata_upi_vpa', cleanVpa);
+      localStorage.setItem('bolkhata_merchant_name', cleanMerchant);
+    } catch {
+      // ignore storage issues
+    }
+    setEditingUpi(false);
+  };
+
+  const handleCopyUpiUri = async () => {
+    try {
+      await navigator.clipboard.writeText(upiUri);
+      setQrCopied(true);
+      setTimeout(() => setQrCopied(false), 1800);
+    } catch {
+      // ignore clipboard issues
+    }
+  };
+
+  const handleMarkUpiPaid = async () => {
+    if (!selectedQrCustomer || parsedQrAmount <= 0) return;
+    setQrPayingBusy(true);
+    setQrPaidNotice(null);
+    try {
+      await onRecordJamaPayment(selectedQrCustomer, parsedQrAmount);
+      setQrPaidNotice(
+        `Logged ${formatInr(parsedQrAmount)} UPI Jama for ${selectedQrCustomer.name}.`
+      );
+    } finally {
+      setQrPayingBusy(false);
+    }
+  };
 
   const handleSubmitCommand = (e: React.FormEvent) => {
     e.preventDefault();
@@ -630,6 +746,190 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
                   All SKUs above reorder threshold.
                 </div>
               )}
+            </div>
+          </section>
+
+          {/* Dynamic UPI Payment QR Generator (Synced to Voice Read-Back) */}
+          <section className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="font-display text-lg font-semibold text-slate-900 inline-flex items-center gap-2">
+                  <QrCode className="w-4 h-4 text-blue-700" />
+                  05. Dynamic UPI Payment QR
+                </h2>
+                <p className="text-xs text-slate-500 mt-1">
+                  Auto-updates from voice transaction read-back · Scan via GPay, PhonePe, Paytm
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingUpi(!editingUpi)}
+                className="text-xs font-medium text-blue-700 hover:text-blue-800 whitespace-nowrap shrink-0"
+              >
+                {editingUpi ? 'Close VPA' : 'Edit UPI ID'}
+              </button>
+            </div>
+
+            {editingUpi && (
+              <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200 space-y-2.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                      Merchant UPI VPA
+                    </label>
+                    <input
+                      type="text"
+                      value={upiVpa}
+                      onChange={(e) => setUpiVpa(e.target.value)}
+                      placeholder="shopname@okaxis"
+                      className="w-full px-2.5 py-1.5 text-xs font-mono bg-white border border-slate-200 rounded-md focus:outline-none focus:border-blue-700"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                      Store Payee Name
+                    </label>
+                    <input
+                      type="text"
+                      value={merchantName}
+                      onChange={(e) => setMerchantName(e.target.value)}
+                      placeholder="BolKhata Wholesale"
+                      className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md focus:outline-none focus:border-blue-700"
+                    />
+                  </div>
+                </div>
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={handleSaveUpiSettings}
+                    className="px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 rounded-md hover:bg-slate-800"
+                  >
+                    Save Merchant UPI
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-col sm:flex-row items-center sm:items-start gap-5">
+              <div className="p-3 bg-white border border-slate-200 rounded-xl shrink-0">
+                <QRCodeSVG
+                  value={upiUri}
+                  size={148}
+                  level="M"
+                  bgColor="#ffffff"
+                  fgColor="#0f172a"
+                />
+              </div>
+
+              <div className="flex-1 w-full space-y-3 min-w-0">
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span
+                    className={`font-mono font-semibold ${
+                      qrStageLabel === 'READBACK'
+                        ? 'text-blue-700'
+                        : qrStageLabel === 'PENDING_APPROVAL'
+                        ? 'text-amber-700'
+                        : qrStageLabel === 'CONFIRMED'
+                        ? 'text-emerald-700'
+                        : 'text-slate-600'
+                    }`}
+                  >
+                    {qrStageLabel.replace('_', ' ')}
+                  </span>
+                  <span className="font-mono text-slate-500 truncate">{cleanVpa}</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                      Customer Khata
+                    </label>
+                    <select
+                      value={qrCustomerId}
+                      onChange={(e) => {
+                        const cid = e.target.value;
+                        setQrCustomerId(cid);
+                        setQrStageLabel('MANUAL BILL');
+                        setQrPaidNotice(null);
+                        const cust = customers.find((c) => c.id === cid);
+                        if (cust && !qrAmount && cust.current_udhaar_balance > 0) {
+                          setQrAmount(String(cust.current_udhaar_balance));
+                          setQrNote(`${cust.name} - Udhaar Settlement`);
+                        }
+                      }}
+                      className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md text-slate-900 focus:outline-none focus:border-blue-700"
+                    >
+                      <option value="">Walk-in / Cash Customer</option>
+                      {customers.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                      Bill Amount (INR)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={qrAmount}
+                      onChange={(e) => {
+                        setQrAmount(e.target.value);
+                        setQrStageLabel('CUSTOM AMOUNT');
+                        setQrPaidNotice(null);
+                      }}
+                      placeholder="0"
+                      className="w-full px-2.5 py-1.5 text-xs font-mono font-semibold bg-white border border-slate-200 rounded-md text-slate-900 focus:outline-none focus:border-blue-700 tabular-nums"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                    UPI Payment Note
+                  </label>
+                  <input
+                    type="text"
+                    value={qrNote}
+                    onChange={(e) => setQrNote(e.target.value)}
+                    placeholder="Order reference or item details"
+                    className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md text-slate-900 focus:outline-none focus:border-blue-700"
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={handleCopyUpiUri}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
+                  >
+                    {qrCopied ? <Check className="w-3.5 h-3.5 text-emerald-700" /> : <Copy className="w-3.5 h-3.5" />}
+                    {qrCopied ? 'UPI Link Copied' : 'Copy UPI Link'}
+                  </button>
+
+                  {selectedQrCustomer && parsedQrAmount > 0 && (
+                    <button
+                      type="button"
+                      disabled={qrPayingBusy}
+                      onClick={handleMarkUpiPaid}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 disabled:opacity-50 transition-colors"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      {qrPayingBusy
+                        ? 'Logging Jama...'
+                        : `Mark ${formatInr(parsedQrAmount)} Paid`}
+                    </button>
+                  )}
+                </div>
+
+                {qrPaidNotice && (
+                  <p className="text-xs font-medium text-emerald-700">{qrPaidNotice}</p>
+                )}
+              </div>
             </div>
           </section>
         </div>

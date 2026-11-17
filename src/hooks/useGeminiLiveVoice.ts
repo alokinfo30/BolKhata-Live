@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { logAgentTrace, logVoiceTranscript } from '../services/firestoreOps';
 import { GeminiLiveClient } from '../services/geminiLiveClient';
-import type { Customer, InventoryItem, TranscriptMessage } from '../types';
+import type {
+  ActiveBillPreview,
+  Customer,
+  InventoryItem,
+  LatencySamplePoint,
+  TranscriptMessage,
+} from '../types';
 
 interface UseGeminiLiveVoiceOptions {
   ownerId: string | null;
@@ -21,6 +27,8 @@ export function useGeminiLiveVoice({
   const [micLevel, setMicLevel] = useState(0);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const [latencySamples, setLatencySamples] = useState<number[]>([]);
+  const [latencyHistory, setLatencyHistory] = useState<LatencySamplePoint[]>([]);
+  const [activeBillPreview, setActiveBillPreview] = useState<ActiveBillPreview | null>(null);
   const [liveTranscripts, setLiveTranscripts] = useState<TranscriptMessage[]>([]);
   const [voiceError, setVoiceError] = useState<string | null>(null);
 
@@ -164,9 +172,25 @@ export function useGeminiLiveVoice({
       onLatencySample: (ms) => {
         setLatencyMs(ms);
         setLatencySamples((prev) => [...prev.slice(-19), ms]);
+        const now = Date.now();
+        setLatencyHistory((prev) => [
+          ...prev.slice(-39),
+          {
+            timestamp: now,
+            timeLabel: new Date(now).toLocaleTimeString('en-IN', {
+              hour12: false,
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            }),
+            latencyMs: ms,
+            source: 'Voice',
+          },
+        ]);
       },
       onMicLevel: (rms) => setMicLevel(rms),
       onAgentSpeakingChange: (speaking) => setIsAgentSpeaking(speaking),
+      onBillPreview: (bill) => setActiveBillPreview(bill),
       onError: (message) => {
         setVoiceError(message);
         setIsConnecting(false);
@@ -269,6 +293,9 @@ export function useGeminiLiveVoice({
     micLevel,
     latencyMs,
     avgLatencyMs,
+    latencyHistory,
+    activeBillPreview,
+    setActiveBillPreview,
     liveTranscripts,
     voiceError,
     startSession,

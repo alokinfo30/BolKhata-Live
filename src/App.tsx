@@ -24,6 +24,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { CounterWorkspace } from './components/CounterWorkspace';
 import { KhataInventoryView } from './components/KhataInventoryView';
 import { ApprovalsHistoryView } from './components/ApprovalsHistoryView';
+import { PerformanceView } from './components/PerformanceView';
 import { InsightsAuditView } from './components/InsightsAuditView';
 import type {
   AgentTraceItem,
@@ -37,7 +38,7 @@ import type {
   SentimentLog,
 } from './types';
 
-type ActiveTab = 'counter' | 'khata' | 'approvals' | 'insights';
+type ActiveTab = 'counter' | 'khata' | 'approvals' | 'performance' | 'insights';
 
 function getMillis(ts: unknown): number {
   if (ts && typeof ts === 'object' && 'toMillis' in ts && typeof (ts as Timestamp).toMillis === 'function') {
@@ -53,6 +54,7 @@ function sortByCreatedDesc<T extends { createdAt?: unknown }>(items: T[]): T[] {
 function BolKhataApp() {
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
+  const [signingIn, setSigningIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [offlineWarning, setOfflineWarning] = useState(false);
 
@@ -240,11 +242,29 @@ function BolKhataApp() {
   }, [authReady, user]);
 
   const handleSignIn = async () => {
+    if (signingIn) return;
     setAuthError(null);
+    setSigningIn(true);
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (err) {
-      setAuthError(err instanceof Error ? err.message : 'Google Sign-In failed');
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? String((err as { code?: string }).code || '')
+          : '';
+      const message = err instanceof Error ? err.message : 'Google Sign-In failed';
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        // User dismissed or superseded the sign-in popup; no error banner needed.
+      } else if (message.includes('auth/unauthorized-domain')) {
+        const host = window.location.hostname;
+        setAuthError(
+          `Domain "${host}" is not authorized in Firebase Auth yet. Add "${host}" under Firebase Console → Authentication → Settings → Authorized domains for project "numeric-dolphin-bds98", then click Sign In again.`
+        );
+      } else {
+        setAuthError(message);
+      }
+    } finally {
+      setSigningIn(false);
     }
   };
 
@@ -411,6 +431,17 @@ function BolKhataApp() {
             </button>
             <button
               type="button"
+              onClick={() => setActiveTab('performance')}
+              className={`py-1 border-b-2 transition-colors whitespace-nowrap shrink-0 ${
+                activeTab === 'performance'
+                  ? 'border-blue-700 text-slate-900'
+                  : 'border-transparent text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Performance
+            </button>
+            <button
+              type="button"
               onClick={() => setActiveTab('insights')}
               className={`py-1 border-b-2 transition-colors whitespace-nowrap shrink-0 ${
                 activeTab === 'insights'
@@ -464,10 +495,11 @@ function BolKhataApp() {
             ) : (
               <button
                 type="button"
+                disabled={signingIn}
                 onClick={handleSignIn}
-                className="px-4 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors whitespace-nowrap shrink-0"
+                className="px-4 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 disabled:opacity-60 transition-colors whitespace-nowrap shrink-0"
               >
-                Sign In
+                {signingIn ? 'Signing In...' : 'Sign In'}
               </button>
             )}
           </div>
@@ -482,6 +514,7 @@ function BolKhataApp() {
               ['counter', 'Counter'],
               ['khata', 'Khata & Stock'],
               ['approvals', `Approvals (${pendingApprovalsCount})`],
+              ['performance', 'Performance'],
               ['insights', 'Insights & Audit'],
             ] as const
           ).map(([id, label]) => (
@@ -566,10 +599,11 @@ function BolKhataApp() {
               <div className="pt-2 flex flex-wrap items-center gap-4">
                 <button
                   type="button"
+                  disabled={signingIn}
                   onClick={handleSignIn}
-                  className="px-5 py-2.5 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 transition-colors"
+                  className="px-5 py-2.5 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 disabled:opacity-60 transition-colors"
                 >
-                  Sign in with Google to Open Counter
+                  {signingIn ? 'Opening Google Sign-In...' : 'Sign in with Google to Open Counter'}
                 </button>
                 <span className="text-xs text-slate-500">
                   Authenticated counter data is isolated to your store account.
@@ -618,6 +652,9 @@ function BolKhataApp() {
                 traces={traces}
                 transactions={transactions}
                 inventory={inventory}
+                customers={customers}
+                activeBillPreview={voice.activeBillPreview}
+                onRecordJamaPayment={handleRecordJamaPayment}
                 onManualUndo={handleManualUndo}
                 undoBusy={undoBusy}
               />
@@ -643,6 +680,16 @@ function BolKhataApp() {
                 approvals={approvals}
                 onResolveApproval={handleResolveApproval}
                 resolvingId={resolvingId}
+              />
+            )}
+
+            {activeTab === 'performance' && (
+              <PerformanceView
+                transactions={transactions}
+                approvals={approvals}
+                traces={traces}
+                latencyHistory={voice.latencyHistory}
+                avgLatencyMs={voice.avgLatencyMs}
               />
             )}
 

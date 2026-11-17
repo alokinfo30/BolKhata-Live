@@ -136,6 +136,25 @@ export interface PersistedVoiceTranscript {
   createdAt?: unknown;
 }
 
+export interface LatencySamplePoint {
+  timestamp: number;
+  timeLabel: string;
+  latencyMs: number;
+  source: 'Voice' | 'Tool';
+}
+
+export interface ActiveBillPreview {
+  customerId: string;
+  customerName: string;
+  itemName: string;
+  qty: number;
+  unit: string;
+  totalAmount: number;
+  txType: TxType;
+  status: 'READBACK' | 'PENDING_APPROVAL' | 'CONFIRMED';
+  updatedAt: number;
+}
+
 export interface InsightsReport {
   whatsapp_reminder: {
     customer_name: string;
