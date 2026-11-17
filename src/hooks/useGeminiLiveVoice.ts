@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { logAgentTrace, logVoiceTranscript } from '../services/firestoreOps';
-import { GeminiLiveClient } from '../services/geminiLiveClient';
+import {
+  GeminiLiveClient,
+  listAudioInputDevices,
+  type AudioInputOption,
+} from '../services/geminiLiveClient';
 import type {
   ActiveBillPreview,
   Customer,
@@ -31,6 +35,10 @@ export function useGeminiLiveVoice({
   const [activeBillPreview, setActiveBillPreview] = useState<ActiveBillPreview | null>(null);
   const [liveTranscripts, setLiveTranscripts] = useState<TranscriptMessage[]>([]);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [micUnavailable, setMicUnavailable] = useState(false);
+  const [textOnlyMode, setTextOnlyMode] = useState(false);
+  const [audioInputs, setAudioInputs] = useState<AudioInputOption[]>([]);
+  const [selectedMicId, setSelectedMicId] = useState<string>('');
 
   const clientRef = useRef<GeminiLiveClient | null>(null);
   const ownerIdRef = useRef(ownerId);
@@ -92,6 +100,22 @@ export function useGeminiLiveVoice({
     }
   }, []);
 
+  const refreshAudioDevices = useCallback(async () => {
+    const list = await listAudioInputDevices();
+    setAudioInputs(list);
+  }, []);
+
+  useEffect(() => {
+    void refreshAudioDevices();
+    const md = typeof navigator !== 'undefined' ? navigator.mediaDevices : undefined;
+    if (!md || !md.addEventListener) return;
+    const handler = () => {
+      void refreshAudioDevices();
+    };
+    md.addEventListener('devicechange', handler);
+    return () => md.removeEventListener('devicechange', handler);
+  }, [refreshAudioDevices]);
+
   const stopSession = useCallback(() => {
     flushPendingTurns();
     if (clientRef.current) {
@@ -101,32 +125,43 @@ export function useGeminiLiveVoice({
     setIsConnected(false);
     setIsConnecting(false);
     setIsAgentSpeaking(false);
+    setTextOnlyMode(false);
     setMicLevel(0);
   }, [flushPendingTurns]);
 
-  const startSession = useCallback(async () => {
-    if (!ownerIdRef.current || isConnecting || isConnected) return;
-    setVoiceError(null);
-    setIsConnecting(true);
-    sessionIdRef.current = `sess_${Date.now()}`;
-    pendingUserRef.current = '';
-    pendingAgentRef.current = '';
-    setLiveTranscripts([]);
+  const startSession = useCallback(
+    async (opts?: { textOnly?: boolean } | unknown) => {
+      if (!ownerIdRef.current || isConnecting || isConnected) return;
+      const useTextOnly = Boolean(
+        opts && typeof opts === 'object' && 'textOnly' in opts && (opts as { textOnly?: boolean }).textOnly
+      );
 
-    const client = new GeminiLiveClient({
-      onSessionReady: () => {
-        setIsConnecting(false);
-        setIsConnected(true);
-        const uid = ownerIdRef.current;
-        if (uid) {
-          void logVoiceTranscript(
-            uid,
-            sessionIdRef.current,
-            'system',
-            'Counter voice channel connected (16kHz PCM).'
-          );
-        }
-      },
+      setVoiceError(null);
+      setMicUnavailable(false);
+      setTextOnlyMode(useTextOnly);
+      setIsConnecting(true);
+      sessionIdRef.current = `sess_${Date.now()}`;
+      pendingUserRef.current = '';
+      pendingAgentRef.current = '';
+      setLiveTranscripts([]);
+
+      const client = new GeminiLiveClient({
+        onSessionReady: () => {
+          setIsConnecting(false);
+          setIsConnected(true);
+          void refreshAudioDevices();
+          const uid = ownerIdRef.current;
+          if (uid) {
+            void logVoiceTranscript(
+              uid,
+              sessionIdRef.current,
+              'system',
+              useTextOnly
+                ? 'Counter channel connected (Text + 24kHz Speaker Mode).'
+                : 'Counter voice channel connected (16kHz PCM).'
+            );
+          }
+        },
       onSessionClosed: () => {
         flushPendingTurns();
         setIsConnected(false);
@@ -218,13 +253,24 @@ export function useGeminiLiveVoice({
     ].join('\n');
 
     try {
-      await client.connect(ownerIdRef.current, sessionIdRef.current, catalogSummary);
+      await client.connect(ownerIdRef.current, sessionIdRef.current, catalogSummary, {
+        textOnly: useTextOnly,
+        deviceId: selectedMicId || undefined,
+      });
     } catch (err) {
-      setVoiceError(
+      const msg =
         err instanceof Error
           ? err.message
-          : 'Microphone access denied or audio device unavailable.'
-      );
+          : 'Microphone access denied or audio device unavailable.';
+      setVoiceError(msg);
+      if (
+        msg.toLowerCase().includes('device was removed') ||
+        msg.toLowerCase().includes('microphone unavailable') ||
+        msg.toLowerCase().includes('no working microphone') ||
+        msg.toLowerCase().includes('not found')
+      ) {
+        setMicUnavailable(true);
+      }
       stopSession();
     }
   }, [
@@ -233,6 +279,8 @@ export function useGeminiLiveVoice({
     isConnected,
     isConnecting,
     isMuted,
+    refreshAudioDevices,
+    selectedMicId,
     stopSession,
   ]);
 
@@ -298,6 +346,11 @@ export function useGeminiLiveVoice({
     setActiveBillPreview,
     liveTranscripts,
     voiceError,
+    micUnavailable,
+    textOnlyMode,
+    audioInputs,
+    selectedMicId,
+    setSelectedMicId,
     startSession,
     stopSession,
     sendTextTurn,

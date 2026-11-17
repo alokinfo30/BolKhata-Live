@@ -60,6 +60,125 @@ function base64ToInt16(base64: string): Int16Array {
   return new Int16Array(bytes.buffer);
 }
 
+export interface AudioInputOption {
+  deviceId: string;
+  label: string;
+}
+
+export async function listAudioInputDevices(): Promise<AudioInputOption[]> {
+  if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) {
+    return [];
+  }
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    return devices
+      .filter((d) => d.kind === 'audioinput' && d.deviceId)
+      .map((d, idx) => ({
+        deviceId: d.deviceId,
+        label: d.label || `Microphone ${idx + 1}`,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+async function createAudioContextSafe(targetSampleRate: number): Promise<AudioContext> {
+  try {
+    const ctx = new AudioContext({ sampleRate: targetSampleRate });
+    await ctx.resume();
+    return ctx;
+  } catch {
+    const fallbackCtx = new AudioContext();
+    await fallbackCtx.resume();
+    return fallbackCtx;
+  }
+}
+
+async function acquireMicrophoneStream(preferredDeviceId?: string): Promise<MediaStream> {
+  if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+    throw new Error(
+      'Microphone capture is not supported in this browser context (requires HTTPS or localhost).'
+    );
+  }
+
+  const attempts: MediaStreamConstraints[] = [];
+
+  if (preferredDeviceId) {
+    attempts.push({
+      audio: {
+        deviceId: { exact: preferredDeviceId },
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
+    attempts.push({
+      audio: { deviceId: { exact: preferredDeviceId } },
+    });
+  }
+
+  attempts.push({
+    audio: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+      channelCount: 1,
+    },
+  });
+
+  attempts.push({ audio: true });
+
+  let lastError: unknown = null;
+
+  for (const constraints of attempts) {
+    try {
+      return await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (err) {
+      lastError = err;
+      const name = err instanceof DOMException ? err.name : '';
+      if (name === 'NotAllowedError' || name === 'SecurityError') {
+        throw new Error(
+          'Microphone permission was denied. Allow mic access in your browser site settings and retry.'
+        );
+      }
+    }
+  }
+
+  // Enumerate all available audio inputs and try each specific device in case the default device was removed or stale
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const audioInputs = devices
+      .filter((d) => d.kind === 'audioinput' && d.deviceId && d.deviceId !== preferredDeviceId)
+      .sort((a, b) => {
+        const aDefault = a.deviceId === 'default' || a.deviceId === 'communications' ? 1 : 0;
+        const bDefault = b.deviceId === 'default' || b.deviceId === 'communications' ? 1 : 0;
+        return aDefault - bDefault;
+      });
+
+    for (const dev of audioInputs) {
+      try {
+        return await navigator.mediaDevices.getUserMedia({
+          audio: { deviceId: { exact: dev.deviceId } },
+        });
+      } catch (err) {
+        lastError = err;
+      }
+    }
+  } catch {
+    // ignore enumerateDevices failure
+  }
+
+  const rawMsg = lastError instanceof Error ? lastError.message : String(lastError || '');
+  if (rawMsg.toLowerCase().includes('device was removed') || rawMsg.toLowerCase().includes('not found')) {
+    throw new Error(
+      'Microphone unavailable ("Device was removed"). Reconnect your mic/headset or use Text + Voice Output mode below.'
+    );
+  }
+  throw new Error(
+    rawMsg || 'No working microphone device was detected. You can still use Text + Voice Output mode.'
+  );
+}
+
 export interface GeminiLiveClientCallbacks {
   onSessionReady: () => void;
   onSessionClosed: () => void;
@@ -112,50 +231,102 @@ export class GeminiLiveClient {
   async connect(
     ownerId: string,
     sessionId: string,
-    catalogContext: string
+    catalogContext: string,
+    options?: { textOnly?: boolean; deviceId?: string }
   ): Promise<void> {
     this.ownerId = ownerId;
     this.sessionId = sessionId;
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        channelCount: 1,
-      },
-    });
-    this.stream = stream;
+    const textOnly = Boolean(options?.textOnly);
 
-    const inputCtx = new AudioContext({ sampleRate: 16000 });
-    const outputCtx = new AudioContext({ sampleRate: 24000 });
-    await inputCtx.resume();
-    await outputCtx.resume();
-    this.inputCtx = inputCtx;
+    const outputCtx = await createAudioContextSafe(24000);
     this.outputCtx = outputCtx;
     this.nextStartTime = outputCtx.currentTime;
 
-    const blobUrl = URL.createObjectURL(
-      new Blob([WORKLET_CODE], { type: 'application/javascript' })
-    );
-    await inputCtx.audioWorklet.addModule(blobUrl);
-    URL.revokeObjectURL(blobUrl);
+    if (!textOnly) {
+      let stream: MediaStream;
+      try {
+        stream = await acquireMicrophoneStream(options?.deviceId);
+      } catch (micErr) {
+        outputCtx.close().catch(() => {});
+        this.outputCtx = null;
+        throw micErr;
+      }
+      this.stream = stream;
 
-    const source = inputCtx.createMediaStreamSource(stream);
-    const analyser = inputCtx.createAnalyser();
-    analyser.fftSize = 256;
-    this.analyser = analyser;
+      const audioTrack = stream.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.onended = () => {
+          this.muted = true;
+          this.callbacks.onMicLevel(0);
+          this.callbacks.onError(
+            'Active microphone was disconnected. Session stays open in Text + Voice Output mode.'
+          );
+        };
+      }
 
-    const workletNode = new AudioWorkletNode(inputCtx, 'bolkhata-pcm-processor');
-    this.workletNode = workletNode;
+      const inputCtx = await createAudioContextSafe(16000);
+      this.inputCtx = inputCtx;
 
-    const silentGain = inputCtx.createGain();
-    silentGain.gain.value = 0;
+      const blobUrl = URL.createObjectURL(
+        new Blob([WORKLET_CODE], { type: 'application/javascript' })
+      );
+      await inputCtx.audioWorklet.addModule(blobUrl);
+      URL.revokeObjectURL(blobUrl);
 
-    source.connect(analyser);
-    analyser.connect(workletNode);
-    workletNode.connect(silentGain);
-    silentGain.connect(inputCtx.destination);
+      const source = inputCtx.createMediaStreamSource(stream);
+      const analyser = inputCtx.createAnalyser();
+      analyser.fftSize = 256;
+      this.analyser = analyser;
+
+      const workletNode = new AudioWorkletNode(inputCtx, 'bolkhata-pcm-processor');
+      this.workletNode = workletNode;
+
+      const silentGain = inputCtx.createGain();
+      silentGain.gain.value = 0;
+
+      source.connect(analyser);
+      analyser.connect(workletNode);
+      workletNode.connect(silentGain);
+      silentGain.connect(inputCtx.destination);
+
+      workletNode.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
+        if (this.muted || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+          return;
+        }
+        this.ws.send(
+          JSON.stringify({
+            type: 'audio',
+            data: arrayBufferToBase64(e.data),
+          })
+        );
+      };
+
+      const freqData = new Uint8Array(analyser.frequencyBinCount);
+      const tickLevel = () => {
+        if (!this.analyser) return;
+        this.analyser.getByteTimeDomainData(freqData);
+        let sum = 0;
+        for (let i = 0; i < freqData.length; i++) {
+          const v = (freqData[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / freqData.length);
+        this.callbacks.onMicLevel(this.muted ? 0 : rms);
+
+        const now = performance.now();
+        if (!this.muted && rms > 0.045) {
+          this.wasUserSpeaking = true;
+          this.lastVoiceActiveMs = now;
+        } else if (this.wasUserSpeaking && now - this.lastVoiceActiveMs > 350) {
+          this.wasUserSpeaking = false;
+          this.turnT0 = now;
+        }
+
+        this.rafLevelId = requestAnimationFrame(tickLevel);
+      };
+      this.rafLevelId = requestAnimationFrame(tickLevel);
+    }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${protocol}//${window.location.host}/ws/live`);
@@ -211,43 +382,6 @@ export class GeminiLiveClient {
     ws.onclose = () => {
       this.callbacks.onSessionClosed();
     };
-
-    workletNode.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
-      if (this.muted || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
-        return;
-      }
-      this.ws.send(
-        JSON.stringify({
-          type: 'audio',
-          data: arrayBufferToBase64(e.data),
-        })
-      );
-    };
-
-    const freqData = new Uint8Array(analyser.frequencyBinCount);
-    const tickLevel = () => {
-      if (!this.analyser) return;
-      this.analyser.getByteTimeDomainData(freqData);
-      let sum = 0;
-      for (let i = 0; i < freqData.length; i++) {
-        const v = (freqData[i] - 128) / 128;
-        sum += v * v;
-      }
-      const rms = Math.sqrt(sum / freqData.length);
-      this.callbacks.onMicLevel(this.muted ? 0 : rms);
-
-      const now = performance.now();
-      if (!this.muted && rms > 0.045) {
-        this.wasUserSpeaking = true;
-        this.lastVoiceActiveMs = now;
-      } else if (this.wasUserSpeaking && now - this.lastVoiceActiveMs > 350) {
-        this.wasUserSpeaking = false;
-        this.turnT0 = now;
-      }
-
-      this.rafLevelId = requestAnimationFrame(tickLevel);
-    };
-    this.rafLevelId = requestAnimationFrame(tickLevel);
   }
 
   private lastLookupCustomer: { id: string; name: string } | null = null;

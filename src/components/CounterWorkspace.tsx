@@ -40,7 +40,13 @@ interface CounterWorkspaceProps {
   liveTranscripts: TranscriptMessage[];
   persistedTranscripts: PersistedVoiceTranscript[];
   voiceError: string | null;
+  micUnavailable?: boolean;
+  textOnlyMode?: boolean;
+  audioInputs?: { deviceId: string; label: string }[];
+  selectedMicId?: string;
+  onSelectMicId?: (id: string) => void;
   onStartVoice: () => void;
+  onStartTextOnlyVoice?: () => void;
   onStopVoice: () => void;
   onFlushPlayback: () => void;
   onSendTextTurn: (text: string) => void;
@@ -98,7 +104,13 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
   liveTranscripts,
   persistedTranscripts,
   voiceError,
+  micUnavailable = false,
+  textOnlyMode = false,
+  audioInputs = [],
+  selectedMicId = '',
+  onSelectMicId,
   onStartVoice,
+  onStartTextOnlyVoice,
   onStopVoice,
   onFlushPlayback,
   onSendTextTurn,
@@ -274,6 +286,8 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
               {isConnected
                 ? isAgentSpeaking
                   ? 'BolKhata Speaking'
+                  : textOnlyMode
+                  ? 'Counter Connected (Text + Speaker Mode)'
                   : isMuted
                   ? 'Counter Connected (Mic Muted)'
                   : 'Counter Listening (Hinglish)'
@@ -350,18 +364,20 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
               <div className="flex items-center gap-2.5 shrink-0">
                 {isConnected && (
                   <>
-                    <button
-                      type="button"
-                      onClick={() => setIsMuted(!isMuted)}
-                      className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
-                        isMuted
-                          ? 'bg-amber-50 border-amber-200 text-amber-800 hover:bg-amber-100'
-                          : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
-                      }`}
-                    >
-                      {isMuted ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
-                      {isMuted ? 'Unmute Mic' : 'Mute Mic'}
-                    </button>
+                    {!textOnlyMode && (
+                      <button
+                        type="button"
+                        onClick={() => setIsMuted(!isMuted)}
+                        className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+                          isMuted
+                            ? 'bg-amber-50 border-amber-200 text-amber-800 hover:bg-amber-100'
+                            : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        {isMuted ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
+                        {isMuted ? 'Unmute Mic' : 'Mute Mic'}
+                      </button>
+                    )}
 
                     {isAgentSpeaking && (
                       <button
@@ -397,9 +413,39 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
             </div>
 
             {voiceError && (
-              <div className="p-3.5 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800 flex items-start gap-2.5">
-                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-red-700" />
-                <span>{voiceError}</span>
+              <div className="p-3.5 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800 space-y-2.5">
+                <div className="flex items-start gap-2.5">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-red-700" />
+                  <span>{voiceError}</span>
+                </div>
+                {(micUnavailable || audioInputs.length > 0) && !isConnected && (
+                  <div className="flex flex-wrap items-center gap-2 pl-6">
+                    {audioInputs.length > 0 && onSelectMicId && (
+                      <select
+                        value={selectedMicId}
+                        onChange={(e) => onSelectMicId(e.target.value)}
+                        className="px-2.5 py-1.5 text-xs bg-white border border-red-200 rounded-md text-slate-800"
+                      >
+                        <option value="">Auto-detect Microphone</option>
+                        {audioInputs.map((dev) => (
+                          <option key={dev.deviceId} value={dev.deviceId}>
+                            {dev.label}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {onStartTextOnlyVoice && (
+                      <button
+                        type="button"
+                        onClick={onStartTextOnlyVoice}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 rounded-md hover:bg-slate-800 transition-colors"
+                      >
+                        <Volume2 className="w-3.5 h-3.5" />
+                        Use Text + Voice Output
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 

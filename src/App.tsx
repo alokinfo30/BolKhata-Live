@@ -56,6 +56,7 @@ function BolKhataApp() {
   const [authReady, setAuthReady] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [unauthorizedHost, setUnauthorizedHost] = useState<string | null>(null);
   const [offlineWarning, setOfflineWarning] = useState(false);
 
   const [activeTab, setActiveTab] = useState<ActiveTab>('counter');
@@ -244,6 +245,7 @@ function BolKhataApp() {
   const handleSignIn = async () => {
     if (signingIn) return;
     setAuthError(null);
+    setUnauthorizedHost(null);
     setSigningIn(true);
     try {
       await signInWithPopup(auth, googleProvider);
@@ -255,10 +257,11 @@ function BolKhataApp() {
       const message = err instanceof Error ? err.message : 'Google Sign-In failed';
       if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
         // User dismissed or superseded the sign-in popup; no error banner needed.
-      } else if (message.includes('auth/unauthorized-domain')) {
-        const host = window.location.hostname;
+      } else if (message.includes('auth/unauthorized-domain') || code === 'auth/unauthorized-domain') {
+        const host = window.location.hostname || 'boalkhata.netlify.app';
+        setUnauthorizedHost(host);
         setAuthError(
-          `Domain "${host}" is not authorized in Firebase Auth yet. Add "${host}" under Firebase Console → Authentication → Settings → Authorized domains for project "numeric-dolphin-bds98", then click Sign In again.`
+          `Domain "${host}" is not in Firebase Auth Authorized domains yet. Add "${host}" (domain only, without https://) in Firebase Console → Authentication → Settings → Authorized domains for project "numeric-dolphin-bds98".`
         );
       } else {
         setAuthError(message);
@@ -478,7 +481,7 @@ function BolKhataApp() {
             {user ? (
               <button
                 type="button"
-                onClick={voice.isConnected ? voice.stopSession : voice.startSession}
+                onClick={() => (voice.isConnected ? voice.stopSession() : void voice.startSession())}
                 disabled={voice.isConnecting}
                 className={`px-4 py-2 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 ${
                   voice.isConnected
@@ -591,8 +594,23 @@ function BolKhataApp() {
               </div>
 
               {authError && (
-                <div className="p-3.5 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800">
-                  {authError}
+                <div className="p-3.5 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800 space-y-2">
+                  <div>{authError}</div>
+                  {unauthorizedHost && (
+                    <div className="flex flex-wrap items-center gap-3 pt-1">
+                      <span className="font-mono bg-white px-2 py-0.5 rounded border border-red-200 text-red-900">
+                        {unauthorizedHost}
+                      </span>
+                      <a
+                        href="https://console.firebase.google.com/project/numeric-dolphin-bds98/authentication/settings"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-semibold text-blue-700 underline underline-offset-2 hover:text-blue-800"
+                      >
+                        Open Firebase Auth Settings
+                      </a>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -642,7 +660,13 @@ function BolKhataApp() {
                 liveTranscripts={voice.liveTranscripts}
                 persistedTranscripts={persistedTranscripts}
                 voiceError={voice.voiceError}
-                onStartVoice={voice.startSession}
+                micUnavailable={voice.micUnavailable}
+                textOnlyMode={voice.textOnlyMode}
+                audioInputs={voice.audioInputs}
+                selectedMicId={voice.selectedMicId}
+                onSelectMicId={voice.setSelectedMicId}
+                onStartVoice={() => void voice.startSession()}
+                onStartTextOnlyVoice={() => void voice.startSession({ textOnly: true })}
                 onStopVoice={voice.stopSession}
                 onFlushPlayback={voice.flushPlayback}
                 onSendTextTurn={voice.sendTextTurn}
