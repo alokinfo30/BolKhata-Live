@@ -23,6 +23,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { VoiceWaveform } from './VoiceWaveform';
 import {
   getConfiguredBackendUrl,
+  isStaticHostingWithoutBackend,
   setConfiguredBackendUrl,
 } from '../services/backendConfig';
 import type {
@@ -238,6 +239,7 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
 
   const [backendUrlInput, setBackendUrlInput] = useState(() => getConfiguredBackendUrl());
   const [backendUrlSaved, setBackendUrlSaved] = useState(false);
+  const [staticNoBackend, setStaticNoBackend] = useState(() => isStaticHostingWithoutBackend());
 
   const [upiVpa, setUpiVpa] = useState<string>(() => {
     try {
@@ -457,6 +459,7 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
   const handleSaveBackendUrl = () => {
     const saved = setConfiguredBackendUrl(backendUrlInput);
     setBackendUrlInput(saved);
+    setStaticNoBackend(isStaticHostingWithoutBackend());
     setBackendUrlSaved(true);
     setTimeout(() => setBackendUrlSaved(false), 2000);
   };
@@ -470,6 +473,38 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
 
   return (
     <div className="space-y-6">
+      {staticNoBackend && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-5 py-3.5 flex flex-wrap items-center justify-between gap-3 text-xs text-amber-950">
+          <div className="space-y-0.5">
+            <div className="font-semibold flex items-center gap-1.5">
+              <Server className="w-3.5 h-3.5 text-amber-700" />
+              Static Frontend Detected ({window.location.hostname})
+            </div>
+            <p className="text-amber-800">
+              Live voice (<span className="font-mono">/ws/live</span>) requires your Express/Cloud
+              Run backend server. Enter your backend URL below or set{' '}
+              <span className="font-mono">VITE_API_BASE_URL</span> in Netlify.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="url"
+              value={backendUrlInput}
+              onChange={(e) => setBackendUrlInput(e.target.value)}
+              placeholder="https://your-backend-service.run.app"
+              className="w-64 px-2.5 py-1.5 text-xs font-mono bg-white border border-amber-300 rounded-md text-slate-900"
+            />
+            <button
+              type="button"
+              onClick={handleSaveBackendUrl}
+              className="px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 rounded-md hover:bg-slate-800 whitespace-nowrap"
+            >
+              {backendUrlSaved ? 'Saved' : 'Save Backend URL'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Workspace Telemetry Bar */}
       <div className="bg-white border border-slate-200 rounded-xl px-5 py-3.5 flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-6 text-sm">
@@ -615,9 +650,19 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
             </div>
 
             {voiceError && (
-              <div className="p-3.5 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800 space-y-2.5">
+              <div
+                className={`p-3.5 rounded-lg border text-xs space-y-2.5 ${
+                  isConnected && textOnlyMode
+                    ? 'bg-amber-50 border-amber-200 text-amber-900'
+                    : 'bg-red-50 border-red-200 text-red-800'
+                }`}
+              >
                 <div className="flex items-start gap-2.5">
-                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-red-700" />
+                  <AlertTriangle
+                    className={`w-4 h-4 shrink-0 mt-0.5 ${
+                      isConnected && textOnlyMode ? 'text-amber-700' : 'text-red-700'
+                    }`}
+                  />
                   <span>{voiceError}</span>
                 </div>
                 {(voiceError.includes('/ws/live') || voiceError.includes('WebSocket')) && (

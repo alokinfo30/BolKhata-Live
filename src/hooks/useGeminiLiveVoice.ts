@@ -262,6 +262,33 @@ export function useGeminiLiveVoice({
         err instanceof Error
           ? err.message
           : 'Microphone access denied or audio device unavailable.';
+      const isMissingMicError =
+        !useTextOnly &&
+        (msg.toLowerCase().includes('device was removed') ||
+          msg.toLowerCase().includes('microphone unavailable') ||
+          msg.toLowerCase().includes('no working microphone') ||
+          msg.toLowerCase().includes('not found'));
+
+      if (isMissingMicError) {
+        setMicUnavailable(true);
+        setTextOnlyMode(true);
+        setVoiceError(
+          'Microphone unavailable ("Device was removed") — automatically switched to Text + Voice Output mode.'
+        );
+        try {
+          await client.connect(ownerIdRef.current, sessionIdRef.current, catalogSummary, {
+            textOnly: true,
+          });
+          return;
+        } catch (fallbackErr) {
+          const fbMsg =
+            fallbackErr instanceof Error ? fallbackErr.message : msg;
+          setVoiceError(fbMsg);
+          stopSession();
+          return;
+        }
+      }
+
       setVoiceError(msg);
       if (
         msg.toLowerCase().includes('device was removed') ||

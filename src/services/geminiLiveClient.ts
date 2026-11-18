@@ -83,15 +83,19 @@ export async function listAudioInputDevices(): Promise<AudioInputOption[]> {
   }
 }
 
-async function createAudioContextSafe(targetSampleRate: number): Promise<AudioContext> {
+async function createAudioContextSafe(targetSampleRate: number): Promise<AudioContext | null> {
   try {
     const ctx = new AudioContext({ sampleRate: targetSampleRate });
     await ctx.resume();
     return ctx;
   } catch {
-    const fallbackCtx = new AudioContext();
-    await fallbackCtx.resume();
-    return fallbackCtx;
+    try {
+      const fallbackCtx = new AudioContext();
+      await fallbackCtx.resume();
+      return fallbackCtx;
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -238,19 +242,27 @@ export class GeminiLiveClient {
     this.ownerId = ownerId;
     this.sessionId = sessionId;
 
+    if (isStaticHostingWithoutBackend()) {
+      throw new Error(
+        `Live voice WebSocket (/ws/live) is not hosted on ${window.location.hostname}. Enter your Express/Cloud Run backend URL below (or set VITE_API_BASE_URL) to connect.`
+      );
+    }
+
     const textOnly = Boolean(options?.textOnly);
 
     const outputCtx = await createAudioContextSafe(24000);
     this.outputCtx = outputCtx;
-    this.nextStartTime = outputCtx.currentTime;
+    this.nextStartTime = outputCtx ? outputCtx.currentTime : 0;
 
     if (!textOnly) {
       let stream: MediaStream;
       try {
         stream = await acquireMicrophoneStream(options?.deviceId);
       } catch (micErr) {
-        outputCtx.close().catch(() => {});
-        this.outputCtx = null;
+        if (outputCtx) {
+          outputCtx.close().catch(() => {});
+          this.outputCtx = null;
+        }
         throw micErr;
       }
       this.stream = stream;
@@ -267,6 +279,13 @@ export class GeminiLiveClient {
       }
 
       const inputCtx = await createAudioContextSafe(16000);
+      if (!inputCtx) {
+        for (const t of stream.getTracks()) t.stop();
+        this.stream = null;
+        throw new Error(
+          'Audio input context unavailable ("Device was removed"). Use Text + Voice Output mode.'
+        );
+      }
       this.inputCtx = inputCtx;
 
       const blobUrl = URL.createObjectURL(
