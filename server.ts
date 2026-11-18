@@ -24,6 +24,8 @@ function createGeminiClient(): GoogleGenAI {
   return new GoogleGenAI({
     apiKey: GEMINI_API_KEY,
     httpOptions: {
+      apiVersion: 'v1beta',
+      baseUrl: 'https://generativelanguage.googleapis.com',
       headers: {
         'User-Agent': 'aistudio-build',
       },
