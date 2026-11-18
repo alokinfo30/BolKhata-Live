@@ -1,8 +1,10 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+import fs from 'fs';
 import http from 'http';
 import path from 'path';
+import cors from 'cors';
 import express from 'express';
 import type { Request, Response } from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -173,21 +175,43 @@ ${catalogContext || 'Use lookup_customer_and_stock to inspect live customer bala
 
 async function startServer(): Promise<void> {
   const app = express();
-  app.use((req: Request, res: Response, next) => {
+  const allowedOrigins = new Set([
+    'https://boalkhata.netlify.app',
+    'https://netlify.app',
+    'https://bolkhata-live.onrender.com',
+    'http://localhost:5173',
+    'http://localhost:3000',
+  ]);
+
+  const corsOptions: cors.CorsOptions = {
+    origin: (origin, callback) => {
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+      if (
+        allowedOrigins.has(origin) ||
+        /^https:\/\/[a-z0-9-]+\.netlify\.app$/i.test(origin) ||
+        /^https:\/\/[a-z0-9-]+\.onrender\.com$/i.test(origin) ||
+        /^https:\/\/[a-z0-9-]+\.run\.app$/i.test(origin)
+      ) {
+        callback(null, true);
+        return;
+      }
+      callback(null, true);
+    },
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true,
+    optionsSuccessStatus: 204,
+  };
+
+  app.use((_req: Request, res: Response, next) => {
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
-    const origin = req.headers.origin;
-    if (origin) {
-      res.setHeader('Access-Control-Allow-Origin', origin);
-      res.setHeader('Vary', 'Origin');
-      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
-    }
-    if (req.method === 'OPTIONS') {
-      res.status(204).end();
-      return;
-    }
     next();
   });
+  app.use(cors(corsOptions));
+  app.options('*', cors(corsOptions));
   app.use(express.json({ limit: '2mb' }));
 
   app.get('/api/health', (_req: Request, res: Response) => {
@@ -397,10 +421,21 @@ Produce:
     app.use(vite.middlewares);
   } else {
     const distDir = path.resolve(process.cwd(), 'dist');
-    app.use(express.static(distDir));
-    app.get('*', (_req: Request, res: Response) => {
-      res.sendFile(path.join(distDir, 'index.html'));
-    });
+    const indexHtmlPath = path.join(distDir, 'index.html');
+    if (fs.existsSync(indexHtmlPath)) {
+      app.use(express.static(distDir));
+      app.get('*', (_req: Request, res: Response) => {
+        res.sendFile(indexHtmlPath);
+      });
+    } else {
+      app.get('/', (_req: Request, res: Response) => {
+        res.json({
+          ok: true,
+          service: 'BolKhata Live API & WebSocket Backend',
+          wsPath: '/ws/live',
+        });
+      });
+    }
   }
 
   const server = http.createServer(app);

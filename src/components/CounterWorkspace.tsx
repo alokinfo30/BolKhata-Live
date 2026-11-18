@@ -491,7 +491,7 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
               type="url"
               value={backendUrlInput}
               onChange={(e) => setBackendUrlInput(e.target.value)}
-              placeholder="https://your-backend-service.run.app"
+              placeholder="https://bolkhata-live.onrender.com"
               className="w-64 px-2.5 py-1.5 text-xs font-mono bg-white border border-amber-300 rounded-md text-slate-900"
             />
             <button
@@ -672,7 +672,7 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
                       type="url"
                       value={backendUrlInput}
                       onChange={(e) => setBackendUrlInput(e.target.value)}
-                      placeholder="https://your-cloud-run-backend.run.app"
+                      placeholder="https://bolkhata-live.onrender.com"
                       className="flex-1 min-w-[220px] px-2.5 py-1.5 text-xs font-mono bg-white border border-red-200 rounded-md text-slate-900"
                     />
                     <button

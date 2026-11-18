@@ -1,10 +1,18 @@
 const STORAGE_KEY = 'bolkhata_backend_url';
 
+const DEFAULT_NETLIFY_BACKEND_URL = 'https://bolkhata-live.onrender.com';
+
 function normalizeBaseUrl(raw: string): string {
   const trimmed = raw.trim().replace(/\/+$/, '');
   if (!trimmed) return '';
   if (/^https?:\/\//i.test(trimmed)) return trimmed;
   return `https://${trimmed}`;
+}
+
+function isNetlifyHost(): boolean {
+  if (typeof window === 'undefined') return false;
+  const host = window.location.hostname.toLowerCase();
+  return host === 'netlify.app' || host.endsWith('.netlify.app');
 }
 
 export function getConfiguredBackendUrl(): string {
@@ -19,6 +27,9 @@ export function getConfiguredBackendUrl(): string {
   const envUrl = import.meta.env.VITE_API_BASE_URL as string | undefined;
   if (envUrl && envUrl.trim()) {
     return normalizeBaseUrl(envUrl);
+  }
+  if (isNetlifyHost()) {
+    return DEFAULT_NETLIFY_BACKEND_URL;
   }
   return '';
 }
@@ -42,6 +53,7 @@ export function isStaticHostingWithoutBackend(): boolean {
   if (getConfiguredBackendUrl()) return false;
   const host = window.location.hostname.toLowerCase();
   return (
+    host === 'netlify.app' ||
     host.endsWith('.netlify.app') ||
     host.endsWith('.vercel.app') ||
     host.endsWith('.pages.dev') ||
