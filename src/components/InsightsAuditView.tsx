@@ -58,9 +58,12 @@ export const InsightsAuditView: React.FC<InsightsAuditViewProps> = ({
   const neuCount = sentimentLogs.filter((s) => s.sentiment === 'NEUTRAL').length;
   const friCount = sentimentLogs.filter((s) => s.sentiment === 'FRICTION').length;
 
+  const [reportRetryable, setReportRetryable] = useState(false);
+
   const handleGenerateInsights = async () => {
     setLoadingReport(true);
     setReportError(null);
+    setReportRetryable(false);
     try {
       const res = await fetch(getApiUrl('/api/insights/generate'), {
         method: 'POST',
@@ -74,11 +77,26 @@ export const InsightsAuditView: React.FC<InsightsAuditViewProps> = ({
           sentimentLogs,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to generate insights');
+      const rawText = await res.text();
+      let data: Record<string, unknown> = {};
+      try {
+        data = rawText ? (JSON.parse(rawText) as Record<string, unknown>) : {};
+      } catch {
+        data = {};
       }
-      setReport(data as InsightsReport);
+      if (!res.ok) {
+        const isTransient =
+          res.status === 503 || res.status === 429 || Boolean(data.retryable);
+        setReportRetryable(isTransient);
+        const message =
+          typeof data.error === 'string' && data.error.trim()
+            ? data.error
+            : res.status === 503
+            ? 'Gemini AI is temporarily experiencing high demand (503). Please retry in a few seconds.'
+            : `Failed to generate insights (HTTP ${res.status})`;
+        throw new Error(message);
+      }
+      setReport(data as unknown as InsightsReport);
     } catch (err) {
       setReportError(err instanceof Error ? err.message : 'Unable to generate insights');
     } finally {
@@ -176,8 +194,18 @@ export const InsightsAuditView: React.FC<InsightsAuditViewProps> = ({
         </div>
 
         {reportError && (
-          <div className="p-3.5 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800">
-            {reportError}
+          <div className="p-3.5 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800 flex flex-wrap items-center justify-between gap-3">
+            <span>{reportError}</span>
+            {reportRetryable && (
+              <button
+                type="button"
+                onClick={handleGenerateInsights}
+                disabled={loadingReport}
+                className="px-3 py-1.5 text-xs font-semibold text-red-900 bg-white border border-red-300 rounded-md hover:bg-red-100 disabled:opacity-50 whitespace-nowrap shrink-0"
+              >
+                Retry Now
+              </button>
+            )}
           </div>
         )}
 

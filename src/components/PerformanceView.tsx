@@ -8,6 +8,7 @@ import {
   Cell,
   Legend,
   Line,
+  LineChart,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -15,6 +16,7 @@ import {
   YAxis,
 } from 'recharts';
 import { Timestamp } from 'firebase/firestore';
+import { buildDailyTransactionVolumeSeries } from '../utils/analytics';
 import type {
   AgentTraceItem,
   ApprovalRequest,
@@ -198,6 +200,8 @@ export const PerformanceView: React.FC<PerformanceViewProps> = ({
     const estAiCostInr = Number((completed.length * 0.6).toFixed(2));
     const netSavingsInr = Math.max(0, Math.round(laborValueSavedInr - estAiCostInr));
 
+    const dailyVolume30 = buildDailyTransactionVolumeSeries(transactions, 30);
+
     return {
       totalProcessed,
       completedCount: completed.length,
@@ -215,6 +219,7 @@ export const PerformanceView: React.FC<PerformanceViewProps> = ({
       latencyChartData,
       outcomeChartData,
       txChronological,
+      dailyVolume30,
       timeSavedMins,
       laborValueSavedInr,
       estAiCostInr,
@@ -270,6 +275,127 @@ export const PerformanceView: React.FC<PerformanceViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Daily Transaction Volume Over Last 30 Days (Recharts LineChart) */}
+      <section className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="font-display text-lg font-semibold text-slate-900">
+              Daily Transaction Volume (Last 30 Days)
+            </h2>
+            <p className="text-xs text-slate-500 mt-1">
+              Completed counter billing &amp; Jama volume aggregated per calendar day (INR)
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3 text-xs font-mono text-slate-600 tabular-nums">
+            <span>30d Total: {formatInr(metrics.dailyVolume30.totalVolumeInr)}</span>
+            <span aria-hidden="true">·</span>
+            <span>Daily Avg: {formatInr(metrics.dailyVolume30.dailyAvgInr)}</span>
+            <span aria-hidden="true">·</span>
+            <span>
+              Peak:{' '}
+              {metrics.dailyVolume30.peakDay
+                ? `${formatInr(metrics.dailyVolume30.peakDay.volumeInr)} (${metrics.dailyVolume30.peakDay.dateLabel})`
+                : '—'}
+            </span>
+          </div>
+        </div>
+
+        {metrics.dailyVolume30.totalTxCount === 0 ? (
+          <div className="h-72 border border-dashed border-slate-200 rounded-lg flex flex-col items-center justify-center text-center px-6">
+            <p className="text-sm font-medium text-slate-700">
+              No completed transactions in the last 30 days
+            </p>
+            <p className="text-xs text-slate-500 mt-1 max-w-md">
+              Log a voice sale, Udhaar entry, or Jama payment to plot your 30-day daily counter
+              volume trendline here.
+            </p>
+          </div>
+        ) : (
+          <div className="h-72 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart
+                data={metrics.dailyVolume30.series}
+                margin={{ top: 12, right: 20, left: 6, bottom: 4 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+                <XAxis
+                  dataKey="dateLabel"
+                  minTickGap={18}
+                  tick={{ fontSize: 11, fill: '#64748b' }}
+                  tickLine={false}
+                  axisLine={{ stroke: '#cbd5e1' }}
+                />
+                <YAxis
+                  tick={{ fontSize: 11, fill: '#64748b' }}
+                  tickLine={false}
+                  axisLine={false}
+                  width={68}
+                  tickFormatter={(v) => {
+                    const num = Number(v);
+                    if (num >= 100000) return `₹${(num / 100000).toFixed(1)}L`;
+                    if (num >= 1000) return `₹${Math.round(num / 1000)}k`;
+                    return `₹${num}`;
+                  }}
+                />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: '#ffffff',
+                    borderColor: '#e2e8f0',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                  }}
+                  formatter={(
+                    value: unknown,
+                    name: unknown,
+                    item: { payload?: { txCount?: number; udhaarInr?: number; jamaInr?: number } }
+                  ) => {
+                    if (name === 'volumeInr') {
+                      const count = item?.payload?.txCount ?? 0;
+                      return [`${formatInr(Number(value))} (${count} tx)`, 'Daily Volume'];
+                    }
+                    return [formatInr(Number(value)), String(name)];
+                  }}
+                  labelFormatter={(label) => `Date: ${label}`}
+                />
+                <Legend
+                  wrapperStyle={{ fontSize: '12px' }}
+                  formatter={(val) =>
+                    val === 'volumeInr'
+                      ? 'Completed Daily Volume (INR)'
+                      : val === 'udhaarInr'
+                      ? 'Udhaar Issued (INR)'
+                      : 'Jama Collected (INR)'
+                  }
+                />
+                {metrics.dailyVolume30.dailyAvgInr > 0 && (
+                  <ReferenceLine
+                    y={metrics.dailyVolume30.dailyAvgInr}
+                    stroke="#94a3b8"
+                    strokeDasharray="4 4"
+                  />
+                )}
+                <Line
+                  type="monotone"
+                  dataKey="volumeInr"
+                  stroke="#1d4ed8"
+                  strokeWidth={2.5}
+                  dot={{ r: 2.5, fill: '#1d4ed8', strokeWidth: 0 }}
+                  activeDot={{ r: 5, fill: '#1d4ed8' }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="jamaInr"
+                  stroke="#047857"
+                  strokeWidth={1.75}
+                  strokeDasharray="4 3"
+                  dot={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </section>
 
       {/* Primary Analytics Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">

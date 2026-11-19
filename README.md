@@ -42,7 +42,7 @@ Summary
 
 ### 2. Khata & Stock (`src/components/KhataInventoryView.tsx` & `src/components/CsvImportModal.tsx`)
 - Real-time customer Khata balances (`current_udhaar_balance`, `credit_limit`), wholesale SKU inventory (`stock_qty`, `reorder_threshold`, Hinglish `aliases`), transaction ledger (`UDHAAR`, `JAMA`, `CASH_SALE`, `UNDONE`), and supplier restock POs.
-- **CSV Import Tool:** Client-side RFC-4180 CSV parser with live preview and chunked Firestore `writeBatch` import for bootstrapping customers and product catalogs.
+- **CSV Import & Secure Export:** Client-side RFC-4180 CSV importer (2 MB / 500-row batch caps) and **Export to CSV** for customer ledger data with UTF-8 BOM and OWASP CWE-1236 spreadsheet formula-injection neutralization.
 
 ### 3. Human-in-the-Loop Approvals (`src/components/ApprovalsHistoryView.tsx`)
 - Automatically pauses and triggers manager approval cards whenever a transaction exceeds the customer's `credit_limit` or a single order exceeds `₹50,000`.
@@ -50,6 +50,7 @@ Summary
 
 ### 4. Performance Dashboard (`src/components/PerformanceView.tsx`)
 - Built with `recharts` to visualize:
+  - **Daily Transaction Volume (Last 30 Days)** (`LineChart` with daily average reference line, peak day, and Jama overlay)
   - **Response Latency Over Time** (ms + session average)
   - **Autonomous vs. Human-Approved Transaction Mix** (plus undone rollbacks)
   - **Transaction Value Stream** (`₹`) and **Counter ROI & Risk Guardrails**
@@ -162,7 +163,11 @@ cp .env.example .env
 # 3. Run full-stack Express + Vite dev server on port 3000
 npm run dev
 
-# 4. Typecheck & production build
+# 4. Run automated unit, security, rules & resilience tests
+npm test
+npx eslint firestore.rules
+
+# 5. Typecheck & production build
 npm run lint
 npm run build
 ```

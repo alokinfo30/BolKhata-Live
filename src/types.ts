@@ -3,6 +3,9 @@ export type TxStatus = 'COMPLETED' | 'UNDONE' | 'PENDING_APPROVAL';
 export type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
 export type RestockStatus = 'ORDERED' | 'RECEIVED' | 'CANCELLED';
 export type SentimentLabel = 'POSITIVE' | 'NEUTRAL' | 'FRICTION';
+export type ReceiptStatus = 'ISSUED' | 'SENT' | 'VOIDED';
+export type NotificationChannel = 'WHATSAPP' | 'SMS' | 'IN_APP' | 'BROADCAST';
+export type NotificationStatus = 'DISPATCHED' | 'DELIVERED' | 'FAILED';
 
 export type TraceStepType =
   | 'VOICE_INTENT'
@@ -13,6 +16,45 @@ export type TraceStepType =
   | 'UNDO'
   | 'RESTOCK'
   | 'ERROR';
+
+export interface Receipt {
+  id: string;
+  ownerId: string;
+  receipt_number: string;
+  tx_id: string;
+  customer_id: string;
+  customer_name: string;
+  customer_phone: string;
+  customer_location: string;
+  item_name: string;
+  qty: number;
+  unit: string;
+  unit_price: number;
+  total_amount: number;
+  tx_type: TxType;
+  previous_balance: number;
+  new_balance: number;
+  upi_uri: string;
+  note: string;
+  status: ReceiptStatus;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface StoreNotification {
+  id: string;
+  ownerId: string;
+  receipt_id: string;
+  receipt_number: string;
+  customer_id: string;
+  customer_name: string;
+  customer_phone: string;
+  channel: NotificationChannel;
+  message: string;
+  status: NotificationStatus;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
 
 export interface Customer {
   id: string;

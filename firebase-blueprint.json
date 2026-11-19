@@ -504,6 +504,191 @@
         "text",
         "createdAt"
       ]
+    },
+    "Receipt": {
+      "title": "Receipt",
+      "description": "Digital Parchi / invoice receipt issued for a store or trader transaction or ledger statement.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "receipt_number": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40
+        },
+        "tx_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "customer_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "customer_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "customer_phone": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 30
+        },
+        "customer_location": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "item_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "qty": {
+          "type": "number"
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "unit_price": {
+          "type": "number"
+        },
+        "total_amount": {
+          "type": "number"
+        },
+        "tx_type": {
+          "type": "string",
+          "enum": ["UDHAAR", "JAMA", "CASH_SALE"]
+        },
+        "previous_balance": {
+          "type": "number"
+        },
+        "new_balance": {
+          "type": "number"
+        },
+        "upi_uri": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "status": {
+          "type": "string",
+          "enum": ["ISSUED", "SENT", "VOIDED"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "receipt_number",
+        "tx_id",
+        "customer_id",
+        "customer_name",
+        "customer_phone",
+        "customer_location",
+        "item_name",
+        "qty",
+        "unit",
+        "unit_price",
+        "total_amount",
+        "tx_type",
+        "previous_balance",
+        "new_balance",
+        "upi_uri",
+        "note",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "StoreNotification": {
+      "title": "StoreNotification",
+      "description": "Outbound receipt or Khata ledger notification dispatched to a store or trader.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "receipt_id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "receipt_number": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "customer_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "customer_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "customer_phone": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 30
+        },
+        "channel": {
+          "type": "string",
+          "enum": ["WHATSAPP", "SMS", "IN_APP", "BROADCAST"]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "status": {
+          "type": "string",
+          "enum": ["DISPATCHED", "DELIVERED", "FAILED"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "receipt_id",
+        "receipt_number",
+        "customer_id",
+        "customer_name",
+        "customer_phone",
+        "channel",
+        "message",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -538,6 +723,14 @@
     "/voice_transcripts/{transcriptId}": {
       "schema": { "$ref": "#/entities/VoiceTranscript" },
       "description": "Persisted timestamped voice counter conversation transcripts."
+    },
+    "/receipts/{receiptId}": {
+      "schema": { "$ref": "#/entities/Receipt" },
+      "description": "Digital Parchi receipts issued to stores and traders."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/StoreNotification" },
+      "description": "Audit log of receipt and Khata notifications dispatched to each store or trader."
     }
   }
 }

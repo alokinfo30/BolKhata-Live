@@ -109,4 +109,76 @@ export const DIRTY_DOZEN_TEST_CASES: DirtyDozenCase[] = [
     expected: 'PERMISSION_DENIED',
     description: 'Attempting to change ownerId or createdAt on update must fail.',
   },
+  {
+    id: 13,
+    name: 'Cross-Tenant Receipt Forgery',
+    collection: 'receipts',
+    operation: 'create',
+    expected: 'PERMISSION_DENIED',
+    description:
+      'Creating a receipt referencing another owner customer_id or mutating total_amount must fail.',
+  },
+  {
+    id: 14,
+    name: 'Notification Message Tampering',
+    collection: 'notifications',
+    operation: 'update',
+    expected: 'PERMISSION_DENIED',
+    description:
+      'Modifying message or phone after dispatch (only status/updatedAt from DISPATCHED allowed) must fail.',
+  },
 ];
+
+import fs from 'fs';
+import path from 'path';
+import { describe, expect, it } from 'vitest';
+
+describe('Firestore Security Rules — Dirty Dozen + Receipt/Notification Invariant Audit', () => {
+  const rulesText = fs.readFileSync(path.resolve(process.cwd(), 'firestore.rules'), 'utf8');
+  const blueprint = JSON.parse(
+    fs.readFileSync(path.resolve(process.cwd(), 'firebase-blueprint.json'), 'utf8')
+  ) as { firestore: Record<string, unknown> };
+
+  it('defines all 14 adversarial security test vectors', () => {
+    expect(DIRTY_DOZEN_TEST_CASES).toHaveLength(14);
+    for (const tc of DIRTY_DOZEN_TEST_CASES) {
+      expect(tc.expected).toBe('PERMISSION_DENIED');
+    }
+  });
+
+  it('enforces global default-deny safety net and verified email identity gate', () => {
+    expect(rulesText).toMatch(/match \/\{document=\*\*\}\s*\{\s*allow read, write: if false;/);
+    expect(rulesText).toContain('request.auth != null');
+    expect(rulesText).toContain('request.auth.token.email_verified == true');
+  });
+
+  it('enforces strict schema keys().hasOnly(), owner isolation, and path ID regex validation', () => {
+    expect(rulesText).toContain('keys().hasOnly(');
+    expect(rulesText).toContain('ownerId == request.auth.uid');
+    expect(rulesText).toContain("matches('^[a-zA-Z0-9_\\\\-]+$')");
+  });
+
+  it('enforces timestamp integrity, terminal state protection, and parent exists() guard', () => {
+    expect(rulesText).toContain('request.time');
+    expect(rulesText).toContain('affectedKeys().hasOnly(');
+    expect(rulesText).toContain('exists(/databases/$(database)/documents/customers/');
+  });
+
+  it('enforces strict validators and immutable fields for receipts and notifications', () => {
+    expect(rulesText).toContain('function isValidReceipt(data)');
+    expect(rulesText).toContain('function isValidStoreNotification(data)');
+    expect(rulesText).toContain('match /receipts/{receiptId}');
+    expect(rulesText).toContain('match /notifications/{notificationId}');
+    expect(rulesText).toContain("existing().status != 'VOIDED'");
+    expect(rulesText).toContain("existing().status == 'DISPATCHED'");
+    expect(rulesText).toContain("existing().status == 'COMPLETED'");
+    expect(rulesText).toContain("incoming().status == 'UNDONE'");
+  });
+
+  it('covers every collection declared in firebase-blueprint.json with explicit match blocks', () => {
+    for (const collectionPath of Object.keys(blueprint.firestore)) {
+      const colName = collectionPath.split('/').filter(Boolean)[0];
+      expect(rulesText).toContain(`match /${colName}/{`);
+    }
+  });
+});

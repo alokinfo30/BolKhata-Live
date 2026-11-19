@@ -1,10 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  BellRing,
   Check,
   Clock,
   Copy,
   Edit3,
+  FileText,
   Mic,
   MicOff,
   MoreHorizontal,
@@ -74,6 +76,11 @@ interface CounterWorkspaceProps {
   ) => Promise<Record<string, unknown> | null>;
   onManualUndo: () => Promise<void>;
   undoBusy: boolean;
+  onOpenReceiptModal: (opts: {
+    mode: 'single' | 'broadcast';
+    customerId?: string;
+    transactionId?: string;
+  }) => void;
 }
 
 const DEMO_PROMPTS = [
@@ -225,6 +232,7 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
   onQuickLookup,
   onManualUndo,
   undoBusy,
+  onOpenReceiptModal,
 }) => {
   const [commandInput, setCommandInput] = useState('');
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
@@ -1206,15 +1214,26 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
                   Atomic Khata writes with instant voice or manual rollback
                 </p>
               </div>
-              <button
-                type="button"
-                disabled={completedTxs.length === 0 || undoBusy}
-                onClick={onManualUndo}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                {undoBusy ? 'Undoing...' : 'Undo Last'}
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  disabled={customers.length === 0}
+                  onClick={() => onOpenReceiptModal({ mode: 'broadcast' })}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
+                >
+                  <BellRing className="w-3.5 h-3.5" />
+                  Notify All
+                </button>
+                <button
+                  type="button"
+                  disabled={completedTxs.length === 0 || undoBusy}
+                  onClick={onManualUndo}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  {undoBusy ? 'Undoing...' : 'Undo Last'}
+                </button>
+              </div>
             </div>
 
             {transactions.length === 0 ? (
@@ -1240,8 +1259,27 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
                         <span aria-hidden="true">·</span> {tx.status}
                       </div>
                     </div>
-                    <div className="font-mono text-sm font-semibold text-slate-900 tabular-nums shrink-0">
-                      {formatInr(tx.total_amount)}
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="font-mono text-sm font-semibold text-slate-900 tabular-nums">
+                        {formatInr(tx.total_amount)}
+                      </span>
+                      {tx.status === 'COMPLETED' && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onOpenReceiptModal({
+                              mode: 'single',
+                              customerId: tx.customer_id,
+                              transactionId: tx.id,
+                            })
+                          }
+                          title="Create Parchi receipt and notify this store"
+                          className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 whitespace-nowrap"
+                        >
+                          <FileText className="w-3 h-3" />
+                          Parchi
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -1448,12 +1486,28 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
                     {qrCopied ? 'UPI Link Copied' : 'Copy UPI Link'}
                   </button>
 
+                  {selectedQrCustomer && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onOpenReceiptModal({
+                          mode: 'single',
+                          customerId: selectedQrCustomer.id,
+                        })
+                      }
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors whitespace-nowrap"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      Create Receipt &amp; Notify
+                    </button>
+                  )}
+
                   {selectedQrCustomer && parsedQrAmount > 0 && (
                     <button
                       type="button"
                       disabled={qrPayingBusy}
                       onClick={handleMarkUpiPaid}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 disabled:opacity-50 transition-colors"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 disabled:opacity-50 transition-colors whitespace-nowrap"
                     >
                       <Check className="w-3.5 h-3.5" />
                       {qrPayingBusy

@@ -222,6 +222,67 @@ service cloud.firestore {
         && data.createdAt is timestamp;
     }
 
+    function isValidReceipt(data) {
+      return data.keys().hasAll([
+          'ownerId', 'receipt_number', 'tx_id', 'customer_id', 'customer_name',
+          'customer_phone', 'customer_location', 'item_name', 'qty', 'unit',
+          'unit_price', 'total_amount', 'tx_type', 'previous_balance',
+          'new_balance', 'upi_uri', 'note', 'status', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'receipt_number', 'tx_id', 'customer_id', 'customer_name',
+          'customer_phone', 'customer_location', 'item_name', 'qty', 'unit',
+          'unit_price', 'total_amount', 'tx_type', 'previous_balance',
+          'new_balance', 'upi_uri', 'note', 'status', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.receipt_number is string && data.receipt_number.size() >= 2 && data.receipt_number.size() <= 40
+        && isValidId(data.tx_id) && data.tx_id.size() <= 64
+        && isValidId(data.customer_id)
+        && data.customer_name is string && data.customer_name.size() >= 1 && data.customer_name.size() <= 120
+        && data.customer_phone is string && data.customer_phone.size() >= 5 && data.customer_phone.size() <= 30
+        && data.customer_location is string && data.customer_location.size() >= 1 && data.customer_location.size() <= 120
+        && data.item_name is string && data.item_name.size() >= 1 && data.item_name.size() <= 140
+        && data.qty is number && data.qty >= 0
+        && data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 32
+        && data.unit_price is number && data.unit_price >= 0
+        && data.total_amount is number && data.total_amount >= 0
+        && data.tx_type in ['UDHAAR', 'JAMA', 'CASH_SALE']
+        && data.previous_balance is number && data.previous_balance >= 0
+        && data.new_balance is number && data.new_balance >= 0
+        && data.upi_uri is string && data.upi_uri.size() <= 400
+        && data.note is string && data.note.size() <= 300
+        && data.status in ['ISSUED', 'SENT', 'VOIDED']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStoreNotification(data) {
+      return data.keys().hasAll([
+          'ownerId', 'receipt_id', 'receipt_number', 'customer_id',
+          'customer_name', 'customer_phone', 'channel', 'message',
+          'status', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'receipt_id', 'receipt_number', 'customer_id',
+          'customer_name', 'customer_phone', 'channel', 'message',
+          'status', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.receipt_id is string && data.receipt_id.size() <= 128
+        && data.receipt_number is string && data.receipt_number.size() <= 40
+        && isValidId(data.customer_id)
+        && data.customer_name is string && data.customer_name.size() >= 1 && data.customer_name.size() <= 120
+        && data.customer_phone is string && data.customer_phone.size() >= 5 && data.customer_phone.size() <= 30
+        && data.channel in ['WHATSAPP', 'SMS', 'IN_APP', 'BROADCAST']
+        && data.message is string && data.message.size() >= 1 && data.message.size() <= 1000
+        && data.status in ['DISPATCHED', 'DELIVERED', 'FAILED']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     // Customers Collection (PII isolated to ownerId)
     match /customers/{customerId} {
       allow get: if isValidId(customerId) && isOwnerOfExisting();
@@ -365,6 +426,54 @@ service cloud.firestore {
         && isValidVoiceTranscript(incoming())
         && incoming().createdAt == request.time;
       allow update, delete: if false;
+    }
+
+    // Digital Receipts (Parchi) Collection (PII isolated to ownerId)
+    match /receipts/{receiptId} {
+      allow get: if isValidId(receiptId) && isOwnerOfExisting();
+      allow list: if isVerifiedUser() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerifiedUser()
+        && isValidId(receiptId)
+        && isValidReceipt(incoming())
+        && incoming().status in ['ISSUED', 'SENT']
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/customers/$(incoming().customer_id))
+        && get(/databases/$(database)/documents/customers/$(incoming().customer_id)).data.ownerId == request.auth.uid;
+      allow update: if isOwnerOfExisting()
+        && isValidId(receiptId)
+        && isValidReceipt(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && existing().status != 'VOIDED'
+        && incoming().status in ['SENT', 'VOIDED']
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // Store / Trader Outbound Notifications Collection (PII isolated to ownerId)
+    match /notifications/{notificationId} {
+      allow get: if isValidId(notificationId) && isOwnerOfExisting();
+      allow list: if isVerifiedUser() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerifiedUser()
+        && isValidId(notificationId)
+        && isValidStoreNotification(incoming())
+        && incoming().status == 'DISPATCHED'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/customers/$(incoming().customer_id))
+        && get(/databases/$(database)/documents/customers/$(incoming().customer_id)).data.ownerId == request.auth.uid;
+      allow update: if isOwnerOfExisting()
+        && isValidId(notificationId)
+        && isValidStoreNotification(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && existing().status == 'DISPATCHED'
+        && incoming().status in ['DELIVERED', 'FAILED']
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+      allow delete: if false;
     }
   }
 }

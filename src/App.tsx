@@ -11,6 +11,8 @@ import {
   testFirestoreConnection,
 } from './firebase';
 import {
+  broadcastReceiptsAndNotificationsToAllStores,
+  createReceiptAndNotifyStore,
   executeLedgerAndInventoryTx,
   importCustomersBatch,
   importInventoryBatch,
@@ -20,7 +22,9 @@ import {
   resolveApproval,
   seedShopDataIfEmpty,
   undoLastTransaction,
+  updateNotificationStatus,
   updateRestockStatus,
+  type CreateReceiptNotifyInput,
   type CsvCustomerInput,
   type CsvInventoryInput,
 } from './services/firestoreOps';
@@ -32,16 +36,23 @@ import { KhataInventoryView } from './components/KhataInventoryView';
 import { ApprovalsHistoryView } from './components/ApprovalsHistoryView';
 import { PerformanceView } from './components/PerformanceView';
 import { InsightsAuditView } from './components/InsightsAuditView';
+import {
+  ReceiptNotificationModal,
+  type ReceiptModalRequest,
+} from './components/ReceiptNotificationModal';
 import type {
   AgentTraceItem,
   ApprovalRequest,
   Customer,
   InventoryItem,
   LedgerTransaction,
+  NotificationChannel,
   PersistedVoiceTranscript,
+  Receipt,
   RestockOrder,
   SentimentLabel,
   SentimentLog,
+  StoreNotification,
 } from './types';
 
 type ActiveTab = 'counter' | 'khata' | 'approvals' | 'performance' | 'insights';
@@ -76,6 +87,9 @@ function BolKhataApp() {
   const [traces, setTraces] = useState<AgentTraceItem[]>([]);
   const [sentimentLogs, setSentimentLogs] = useState<SentimentLog[]>([]);
   const [persistedTranscripts, setPersistedTranscripts] = useState<PersistedVoiceTranscript[]>([]);
+  const [receipts, setReceipts] = useState<Receipt[]>([]);
+  const [notifications, setNotifications] = useState<StoreNotification[]>([]);
+  const [receiptModalReq, setReceiptModalReq] = useState<ReceiptModalRequest | null>(null);
 
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [undoBusy, setUndoBusy] = useState(false);
@@ -102,6 +116,8 @@ function BolKhataApp() {
         setTraces([]);
         setSentimentLogs([]);
         setPersistedTranscripts([]);
+        setReceipts([]);
+        setNotifications([]);
       }
     });
     return () => unsub();
@@ -236,6 +252,30 @@ function BolKhataApp() {
       (err) => handleFirestoreError(err, OperationType.LIST, 'voice_transcripts')
     );
 
+    const unsubReceipts = onSnapshot(
+      query(collection(db, 'receipts'), where('ownerId', '==', uid)),
+      (snap) => {
+        const list = snap.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as Omit<Receipt, 'id'>),
+        }));
+        setReceipts(sortByCreatedDesc(list));
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'receipts')
+    );
+
+    const unsubNotifications = onSnapshot(
+      query(collection(db, 'notifications'), where('ownerId', '==', uid)),
+      (snap) => {
+        const list = snap.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as Omit<StoreNotification, 'id'>),
+        }));
+        setNotifications(sortByCreatedDesc(list));
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'notifications')
+    );
+
     return () => {
       unsubCust();
       unsubInv();
@@ -245,6 +285,8 @@ function BolKhataApp() {
       unsubTraces();
       unsubSentiment();
       unsubTranscripts();
+      unsubReceipts();
+      unsubNotifications();
     };
   }, [authReady, user]);
 
@@ -432,6 +474,49 @@ function BolKhataApp() {
       ai_summary: data.ai_summary || '',
       source: 'UI',
     });
+  };
+
+  const handleCreateSingleReceiptAndNotify = async (input: CreateReceiptNotifyInput) => {
+    if (!user) return null;
+    const t0 = performance.now();
+    const res = await createReceiptAndNotifyStore(user.uid, input);
+    const elapsed = Math.round(performance.now() - t0);
+    await logAgentTrace(
+      user.uid,
+      'receipt_dispatch',
+      'EXECUTED',
+      `Receipt ${res.receipt.receipt_number} Dispatched`,
+      `${res.receipt.customer_name} (${res.receipt.customer_phone}) · ${res.notification.channel} · Bal ₹${res.receipt.new_balance.toLocaleString('en-IN')}`,
+      elapsed
+    );
+    return res;
+  };
+
+  const handleBroadcastStoreNotifications = async (input: {
+    customers: Customer[];
+    transactions: LedgerTransaction[];
+    channel: NotificationChannel;
+    note?: string;
+    upiVpa?: string;
+    storeName?: string;
+  }) => {
+    if (!user) return { dispatchedCount: 0, results: [] };
+    const t0 = performance.now();
+    const res = await broadcastReceiptsAndNotificationsToAllStores(user.uid, input);
+    const elapsed = Math.round(performance.now() - t0);
+    await logAgentTrace(
+      user.uid,
+      'receipt_broadcast',
+      'EXECUTED',
+      `Notified ${res.dispatchedCount} Stores with Digital Parchis`,
+      `Channel ${input.channel} · Issued individualized receipts & balance alerts to ${res.dispatchedCount} stores`,
+      elapsed
+    );
+    return res;
+  };
+
+  const handleMarkNotificationDelivered = async (notificationId: string) => {
+    await updateNotificationStatus(notificationId, 'DELIVERED');
   };
 
   const pendingApprovalsCount = approvals.filter((a) => a.status === 'PENDING').length;
@@ -739,6 +824,7 @@ function BolKhataApp() {
                 onQuickLookup={handleQuickLookup}
                 onManualUndo={handleManualUndo}
                 undoBusy={undoBusy}
+                onOpenReceiptModal={setReceiptModalReq}
               />
             )}
 
@@ -748,6 +834,8 @@ function BolKhataApp() {
                 inventory={inventory}
                 transactions={transactions}
                 restocks={restocks}
+                receipts={receipts}
+                notifications={notifications}
                 lowStockOnly={lowStockOnly}
                 onToggleLowStockOnly={setLowStockOnly}
                 onRecordJamaPayment={handleRecordJamaPayment}
@@ -756,6 +844,8 @@ function BolKhataApp() {
                 }}
                 onImportCustomers={handleImportCustomers}
                 onImportInventory={handleImportInventory}
+                onOpenReceiptModal={setReceiptModalReq}
+                onMarkNotificationDelivered={handleMarkNotificationDelivered}
               />
             )}
 
@@ -793,6 +883,17 @@ function BolKhataApp() {
           </>
         )}
       </main>
+
+      {user && receiptModalReq && (
+        <ReceiptNotificationModal
+          request={receiptModalReq}
+          customers={customers}
+          transactions={transactions}
+          onCreateSingle={handleCreateSingleReceiptAndNotify}
+          onBroadcastAll={handleBroadcastStoreNotifications}
+          onClose={() => setReceiptModalReq(null)}
+        />
+      )}
     </div>
   );
 }

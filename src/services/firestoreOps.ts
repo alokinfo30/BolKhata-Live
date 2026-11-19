@@ -12,13 +12,23 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
+import {
+  buildReceiptNumber,
+  buildStoreNotificationMessage,
+  buildUpiUriForReceipt,
+  sanitizeUpiUri,
+} from '../utils/receiptUtils';
 import type {
   ApprovalRequest,
   Customer,
   InventoryItem,
   LedgerTransaction,
+  NotificationChannel,
+  NotificationStatus,
+  Receipt,
   RestockOrder,
   SentimentLabel,
+  StoreNotification,
   TraceStepType,
   TxType,
 } from '../types';
@@ -684,6 +694,7 @@ export async function undoLastTransaction(
   ownerId: string,
   reason?: string
 ): Promise<Record<string, unknown>> {
+  let targetDocId = 'undo';
   try {
     const snap = await getDocs(
       query(collection(db, 'transactions'), where('ownerId', '==', ownerId))
@@ -698,33 +709,53 @@ export async function undoLastTransaction(
       return { undone: false, message: 'No completed transaction found to undo.' };
     }
 
-    const tx = targetDoc.data() as LedgerTransaction;
-    const custRef = doc(db, 'customers', tx.customer_id);
+    targetDocId = targetDoc.id;
+    const initialTx = targetDoc.data() as LedgerTransaction;
+    const custRef = doc(db, 'customers', initialTx.customer_id);
     const invSnap =
-      tx.type !== 'JAMA' && tx.item_sku !== 'PAYMENT_JAMA'
+      initialTx.type !== 'JAMA' && initialTx.item_sku !== 'PAYMENT_JAMA'
         ? await getDocs(query(collection(db, 'inventory'), where('ownerId', '==', ownerId)))
         : null;
-    const invDoc = invSnap?.docs.find((d) => (d.data() as InventoryItem).sku === tx.item_sku);
+    const invDoc = invSnap?.docs.find((d) => (d.data() as InventoryItem).sku === initialTx.item_sku);
     const invRef = invDoc ? doc(db, 'inventory', invDoc.id) : null;
 
-    await runTransaction(db, async (transaction) => {
+    const undoneSummary = await runTransaction(db, async (transaction) => {
+      // Perform all reads strictly before any writes inside the transaction
       const txSnap = await transaction.get(targetDoc.ref);
-      if (!txSnap.exists() || (txSnap.data() as LedgerTransaction).status !== 'COMPLETED') {
+      const custSnap = await transaction.get(custRef);
+      const invTxSnap = invRef ? await transaction.get(invRef) : null;
+
+      if (!txSnap.exists()) {
+        throw new Error('Transaction already undone.');
+      }
+      const liveTx = txSnap.data() as LedgerTransaction;
+      if (liveTx.status !== 'COMPLETED') {
         throw new Error('Transaction already undone.');
       }
 
+      const restoredBalance = Math.max(0, Number(liveTx.previous_balance) || 0);
+      const restoredStock = Math.max(0, Number(liveTx.previous_stock) || 0);
       const now = serverTimestamp();
 
-      if (tx.type !== 'CASH_SALE') {
+      if (
+        liveTx.type !== 'CASH_SALE' &&
+        custSnap.exists() &&
+        (custSnap.data() as Customer).ownerId === ownerId
+      ) {
         transaction.update(custRef, {
-          current_udhaar_balance: tx.previous_balance,
+          current_udhaar_balance: restoredBalance,
           updatedAt: now,
         });
       }
 
-      if (invRef && tx.qty > 0) {
+      if (
+        invRef &&
+        invTxSnap?.exists() &&
+        (invTxSnap.data() as InventoryItem).ownerId === ownerId &&
+        Number(liveTx.qty) > 0
+      ) {
         transaction.update(invRef, {
-          stock_qty: tx.previous_stock,
+          stock_qty: restoredStock,
           updatedAt: now,
         });
       }
@@ -733,19 +764,26 @@ export async function undoLastTransaction(
         status: 'UNDONE',
         updatedAt: now,
       });
+
+      return {
+        tx_id: liveTx.tx_id,
+        customer_name: liveTx.customer_name,
+        item_name: liveTx.item_name,
+        restored_balance: restoredBalance,
+        restored_stock: restoredStock,
+      };
     });
 
     return {
       undone: true,
-      tx_id: tx.tx_id,
-      customer_name: tx.customer_name,
-      item_name: tx.item_name,
-      restored_balance: tx.previous_balance,
-      restored_stock: tx.previous_stock,
+      ...undoneSummary,
       reason: reason || 'Voice undo requested',
     };
   } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, 'transactions undo');
+    if (error instanceof Error && error.message === 'Transaction already undone.') {
+      return { undone: false, message: 'Latest transaction was already undone.' };
+    }
+    handleFirestoreError(error, OperationType.UPDATE, `transactions/${targetDocId}`);
   }
 }
 
@@ -1011,5 +1049,429 @@ export async function importInventoryBatch(
     handleFirestoreError(error, OperationType.WRITE, 'inventory/csv_import');
   }
 }
+
+export interface CreateReceiptNotifyInput {
+  customer: Customer;
+  transaction?: LedgerTransaction | null;
+  channel: NotificationChannel;
+  customMessage?: string;
+  note?: string;
+  upiVpa?: string;
+  storeName?: string;
+}
+
+export interface DispatchedReceiptResult {
+  receipt: Receipt;
+  notification: StoreNotification;
+}
+
+function buildSafeTxId(raw?: string): string {
+  const cleaned = (raw ?? '')
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .slice(0, 64);
+  return cleaned.length >= 1 ? cleaned : makeSafeId('stmt');
+}
+
+export async function createReceiptAndNotifyStore(
+  ownerId: string,
+  input: CreateReceiptNotifyInput
+): Promise<DispatchedReceiptResult> {
+  const receiptId = makeSafeId('rcpt');
+  const notificationId = makeSafeId('ntf');
+  const receiptNumber = buildReceiptNumber();
+
+  try {
+    const cust = input.customer;
+    const tx = input.transaction ?? null;
+    const safePhone =
+      cust.phone && cust.phone.trim().length >= 5
+        ? clampStr(cust.phone, 30)
+        : '0000000000';
+    const safeLocation = clampStr(cust.location, 120, 'Local Market');
+    const safeName = clampStr(cust.name, 120, 'Store Account');
+
+    const txId = buildSafeTxId(tx?.tx_id);
+    const txType: TxType = tx?.type ?? 'UDHAAR';
+    const itemName = clampStr(tx?.item_name, 140, 'Khata Balance Statement');
+    const qty = Math.max(0, Number(tx?.qty ?? 0));
+    const unit = clampStr(tx?.unit, 32, 'statement');
+    const unitPrice = Math.max(0, Number(tx?.unit_price ?? 0));
+    const totalAmount = Math.max(
+      0,
+      Number(tx ? tx.total_amount : cust.current_udhaar_balance) || 0
+    );
+    const previousBalance = Math.max(
+      0,
+      Number(tx ? tx.previous_balance : cust.current_udhaar_balance) || 0
+    );
+    const newBalance = Math.max(0, Number(cust.current_udhaar_balance) || 0);
+    const storeName = clampStr(input.storeName, 80, 'BolKhata Wholesale');
+    const noteText = clampStr(
+      input.note ?? tx?.note,
+      300,
+      tx ? `Receipt for ${tx.tx_id}` : 'Digital Khata Parchi & Balance Statement'
+    );
+
+    const upiUri = sanitizeUpiUri(
+      buildUpiUriForReceipt({
+        upiVpa: input.upiVpa || 'bolkhata.store@okaxis',
+        merchantName: storeName,
+        amount: newBalance > 0 ? newBalance : totalAmount,
+        note: `${receiptNumber} ${safeName}`,
+      })
+    );
+
+    const defaultMessage = buildStoreNotificationMessage({
+      receiptNumber,
+      storeName,
+      customerName: safeName,
+      itemName,
+      qty,
+      unit,
+      totalAmount,
+      txType,
+      previousBalance,
+      newBalance,
+      upiVpa: input.upiVpa,
+      note: noteText,
+    });
+    const finalMessage = clampStr(input.customMessage, 1000, defaultMessage) || defaultMessage;
+
+    const now = serverTimestamp();
+    const batch = writeBatch(db);
+
+    const receiptPayload: Omit<Receipt, 'id'> = {
+      ownerId,
+      receipt_number: receiptNumber,
+      tx_id: txId,
+      customer_id: cust.id,
+      customer_name: safeName,
+      customer_phone: safePhone,
+      customer_location: safeLocation,
+      item_name: itemName,
+      qty,
+      unit,
+      unit_price: unitPrice,
+      total_amount: totalAmount,
+      tx_type: txType,
+      previous_balance: previousBalance,
+      new_balance: newBalance,
+      upi_uri: upiUri,
+      note: noteText,
+      status: 'SENT',
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const notificationPayload: Omit<StoreNotification, 'id'> = {
+      ownerId,
+      receipt_id: receiptId,
+      receipt_number: receiptNumber,
+      customer_id: cust.id,
+      customer_name: safeName,
+      customer_phone: safePhone,
+      channel: input.channel,
+      message: finalMessage,
+      status: 'DISPATCHED',
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    batch.set(doc(db, 'receipts', receiptId), receiptPayload);
+    batch.set(doc(db, 'notifications', notificationId), notificationPayload);
+    await batch.commit();
+
+    return {
+      receipt: { id: receiptId, ...receiptPayload },
+      notification: { id: notificationId, ...notificationPayload },
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, `receipts/${receiptId}`);
+  }
+}
+
+export async function broadcastReceiptsAndNotificationsToAllStores(
+  ownerId: string,
+  input: {
+    customers: Customer[];
+    transactions: LedgerTransaction[];
+    channel: NotificationChannel;
+    note?: string;
+    upiVpa?: string;
+    storeName?: string;
+  }
+): Promise<{
+  dispatchedCount: number;
+  results: DispatchedReceiptResult[];
+}> {
+  if (input.customers.length === 0) {
+    return { dispatchedCount: 0, results: [] };
+  }
+
+  try {
+    const storeName = clampStr(input.storeName, 80, 'BolKhata Wholesale');
+    const results: DispatchedReceiptResult[] = [];
+    // Each store creates 2 docs (receipt + notification), so 200 stores = 400 writes (< 500 batch cap)
+    const CHUNK = 200;
+
+    for (let start = 0; start < input.customers.length; start += CHUNK) {
+      const slice = input.customers.slice(start, start + CHUNK);
+      const batch = writeBatch(db);
+      const now = serverTimestamp();
+
+      for (const cust of slice) {
+        const latestTx =
+          input.transactions.find(
+            (t) => t.customer_id === cust.id && t.status === 'COMPLETED'
+          ) ?? null;
+
+        const receiptId = makeSafeId('rcpt');
+        const notificationId = makeSafeId('ntf');
+        const receiptNumber = buildReceiptNumber();
+
+        const safePhone =
+          cust.phone && cust.phone.trim().length >= 5
+            ? clampStr(cust.phone, 30)
+            : '0000000000';
+        const safeLocation = clampStr(cust.location, 120, 'Local Market');
+        const safeName = clampStr(cust.name, 120, 'Store Account');
+
+        const txId = buildSafeTxId(latestTx?.tx_id);
+        const txType: TxType = latestTx?.type ?? 'UDHAAR';
+        const itemName = clampStr(latestTx?.item_name, 140, 'Khata Balance Statement');
+        const qty = Math.max(0, Number(latestTx?.qty ?? 0));
+        const unit = clampStr(latestTx?.unit, 32, 'statement');
+        const unitPrice = Math.max(0, Number(latestTx?.unit_price ?? 0));
+        const totalAmount = Math.max(
+          0,
+          Number(latestTx ? latestTx.total_amount : cust.current_udhaar_balance) || 0
+        );
+        const previousBalance = Math.max(
+          0,
+          Number(latestTx ? latestTx.previous_balance : cust.current_udhaar_balance) || 0
+        );
+        const newBalance = Math.max(0, Number(cust.current_udhaar_balance) || 0);
+        const noteText = clampStr(
+          input.note,
+          300,
+          latestTx
+            ? `Broadcast Parchi (${latestTx.tx_id})`
+            : 'Periodic Digital Khata Statement'
+        );
+
+        const upiUri = sanitizeUpiUri(
+          buildUpiUriForReceipt({
+            upiVpa: input.upiVpa || 'bolkhata.store@okaxis',
+            merchantName: storeName,
+            amount: newBalance > 0 ? newBalance : totalAmount,
+            note: `${receiptNumber} ${safeName}`,
+          })
+        );
+
+        const message = buildStoreNotificationMessage({
+          receiptNumber,
+          storeName,
+          customerName: safeName,
+          itemName,
+          qty,
+          unit,
+          totalAmount,
+          txType,
+          previousBalance,
+          newBalance,
+          upiVpa: input.upiVpa,
+          note: noteText,
+        });
+
+        const receiptPayload: Omit<Receipt, 'id'> = {
+          ownerId,
+          receipt_number: receiptNumber,
+          tx_id: txId,
+          customer_id: cust.id,
+          customer_name: safeName,
+          customer_phone: safePhone,
+          customer_location: safeLocation,
+          item_name: itemName,
+          qty,
+          unit,
+          unit_price: unitPrice,
+          total_amount: totalAmount,
+          tx_type: txType,
+          previous_balance: previousBalance,
+          new_balance: newBalance,
+          upi_uri: upiUri,
+          note: noteText,
+          status: 'SENT',
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        const notificationPayload: Omit<StoreNotification, 'id'> = {
+          ownerId,
+          receipt_id: receiptId,
+          receipt_number: receiptNumber,
+          customer_id: cust.id,
+          customer_name: safeName,
+          customer_phone: safePhone,
+          channel: input.channel,
+          message,
+          status: 'DISPATCHED',
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        batch.set(doc(db, 'receipts', receiptId), receiptPayload);
+        batch.set(doc(db, 'notifications', notificationId), notificationPayload);
+
+        results.push({
+          receipt: { id: receiptId, ...receiptPayload },
+          notification: { id: notificationId, ...notificationPayload },
+        });
+      }
+
+      await batch.commit();
+    }
+
+    return { dispatchedCount: results.length, results };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, 'receipts/broadcast');
+  }
+}
+
+export async function updateNotificationStatus(
+  notificationId: string,
+  status: Extract<NotificationStatus, 'DELIVERED' | 'FAILED'>
+): Promise<void> {
+  try {
+    const ref = doc(db, 'notifications', notificationId);
+    await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(ref);
+      if (!snap.exists()) return;
+      const cur = snap.data() as StoreNotification;
+      if (cur.status !== 'DISPATCHED') return;
+      transaction.update(ref, {
+        status,
+        updatedAt: serverTimestamp(),
+      });
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `notifications/${notificationId}`);
+  }
+}
+
+export async function createReceiptAndNotifyByVoice(
+  ownerId: string,
+  args: {
+    customer_name?: string;
+    notify_all_stores?: boolean;
+    channel?: string;
+    note?: string;
+  }
+): Promise<Record<string, unknown>> {
+  const rawChannel = String(args.channel || '').toUpperCase();
+  const channel: NotificationChannel =
+    rawChannel === 'WHATSAPP' ||
+    rawChannel === 'SMS' ||
+    rawChannel === 'IN_APP' ||
+    rawChannel === 'BROADCAST'
+      ? rawChannel
+      : args.notify_all_stores
+      ? 'BROADCAST'
+      : 'WHATSAPP';
+
+  const custSnap = await getDocs(
+    query(collection(db, 'customers'), where('ownerId', '==', ownerId))
+  );
+  const customers = custSnap.docs.map((d) => ({
+    id: d.id,
+    ...(d.data() as Omit<Customer, 'id'>),
+  }));
+
+  if (customers.length === 0) {
+    return { ok: false, error: 'No stores or traders found in Khata.' };
+  }
+
+  const txSnap = await getDocs(
+    query(collection(db, 'transactions'), where('ownerId', '==', ownerId))
+  );
+  const transactions = txSnap.docs
+    .map((d) => ({ id: d.id, ...(d.data() as Omit<LedgerTransaction, 'id'>) }))
+    .sort((a, b) => {
+      const ta = (a.createdAt as Timestamp | undefined)?.toMillis?.() ?? 0;
+      const tb = (b.createdAt as Timestamp | undefined)?.toMillis?.() ?? 0;
+      return tb - ta;
+    });
+
+  let savedVpa = 'bolkhata.store@okaxis';
+  let savedMerchant = 'BolKhata Wholesale';
+  try {
+    savedVpa = localStorage.getItem('bolkhata_upi_vpa') || savedVpa;
+    savedMerchant = localStorage.getItem('bolkhata_merchant_name') || savedMerchant;
+  } catch {
+    // ignore storage errors
+  }
+
+  if (args.notify_all_stores || !args.customer_name?.trim()) {
+    const broadcast = await broadcastReceiptsAndNotificationsToAllStores(ownerId, {
+      customers,
+      transactions,
+      channel,
+      note: args.note,
+      upiVpa: savedVpa,
+      storeName: savedMerchant,
+    });
+    return {
+      ok: true,
+      mode: 'ALL_STORES',
+      dispatched_count: broadcast.dispatchedCount,
+      stores: broadcast.results.map((r) => ({
+        customer_name: r.receipt.customer_name,
+        receipt_number: r.receipt.receipt_number,
+        balance_inr: r.receipt.new_balance,
+      })),
+    };
+  }
+
+  const q = normalizeText(args.customer_name);
+  const matched =
+    customers.find((c) => normalizeText(c.name) === q) ||
+    customers.find(
+      (c) => normalizeText(c.name).includes(q) || q.includes(normalizeText(c.name).split(' ')[0])
+    ) ||
+    null;
+
+  if (!matched) {
+    return {
+      ok: false,
+      error: `Store or trader "${args.customer_name}" not found.`,
+      available_stores: customers.map((c) => c.name),
+    };
+  }
+
+  const latestTx =
+    transactions.find((t) => t.customer_id === matched.id && t.status === 'COMPLETED') ?? null;
+
+  const dispatched = await createReceiptAndNotifyStore(ownerId, {
+    customer: matched,
+    transaction: latestTx,
+    channel,
+    note: args.note,
+    upiVpa: savedVpa,
+    storeName: savedMerchant,
+  });
+
+  return {
+    ok: true,
+    mode: 'SINGLE_STORE',
+    receipt_number: dispatched.receipt.receipt_number,
+    customer_name: dispatched.receipt.customer_name,
+    customer_phone: dispatched.receipt.customer_phone,
+    total_amount: dispatched.receipt.total_amount,
+    new_balance: dispatched.receipt.new_balance,
+    channel: dispatched.notification.channel,
+    notification_status: dispatched.notification.status,
+  };
+}
+
 
 

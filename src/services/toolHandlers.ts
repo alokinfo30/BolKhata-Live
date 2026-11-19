@@ -1,5 +1,6 @@
 import {
   checkBusinessPolicy,
+  createReceiptAndNotifyByVoice,
   createSupplierRestock,
   executeLedgerAndInventoryTx,
   logAgentTrace,
@@ -150,6 +151,30 @@ export async function executeBackendTool(
         result.undone
           ? `Rolled back ${result.customer_name} (${result.item_name}). Restored Bal ₹${result.restored_balance}, Stock ${result.restored_stock}`
           : String(result.message || ''),
+        ms
+      );
+    } else if (name === 'create_receipt_and_notify_store') {
+      result = await createReceiptAndNotifyByVoice(ownerId, {
+        customer_name: args.customer_name as string | undefined,
+        notify_all_stores: Boolean(args.notify_all_stores),
+        channel: args.channel as string | undefined,
+        note: args.note as string | undefined,
+      });
+      const ms = Math.round(performance.now() - tStart);
+      await logAgentTrace(
+        ownerId,
+        sessionId,
+        result.ok ? 'EXECUTED' : 'ERROR',
+        result.ok
+          ? result.mode === 'ALL_STORES'
+            ? `Receipts & Notifications Sent to ${result.dispatched_count} Stores -> ${ms}ms`
+            : `Receipt ${result.receipt_number} Sent -> ${ms}ms`
+          : 'Receipt Dispatch Failed',
+        result.ok
+          ? result.mode === 'ALL_STORES'
+            ? `Created digital Parchis and dispatched store notifications across ${result.dispatched_count} accounts.`
+            : `${result.customer_name} (${result.customer_phone}) · Channel ${result.channel} · Bal ₹${result.new_balance}`
+          : String(result.error || 'Could not dispatch store receipt'),
         ms
       );
     }

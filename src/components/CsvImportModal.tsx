@@ -216,9 +216,22 @@ export const CsvImportModal: React.FC<CsvImportModalProps> = ({
     if (!file) return;
     setErrorMessage(null);
     setStatusMessage(null);
+
+    const MAX_CSV_BYTES = 2 * 1024 * 1024;
+    if (file.size > MAX_CSV_BYTES) {
+      setErrorMessage('CSV file exceeds the 2 MB safety limit. Split into smaller batches and retry.');
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = () => {
-      setCsvText(String(reader.result || ''));
+      const content = String(reader.result || '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+      const lineCount = content.split(/\r?\n/).filter((l) => l.trim().length > 0).length;
+      if (lineCount > 501) {
+        setErrorMessage('CSV exceeds 500 data rows per batch. Please import up to 500 rows at a time.');
+        return;
+      }
+      setCsvText(content);
     };
     reader.onerror = () => {
       setErrorMessage('Failed to read the selected CSV file.');
