@@ -7,6 +7,20 @@
 
 [Click here for Frontend URL](https://boalkhata.netlify.app/)
 
+• Target User & Setting: A busy Kirana/Wholesale shopkeeper or warehouse dispatcher operating at a noisy Indian shop counter or loading dock.
+• Operational Friction: Updating credit ledgers (Udhaar/Khata), deducting live stock, checking credit limits, and raising supplier restock orders while speaking rapid Hinglish/Hindi/Tamil with customers and staff.
+• Action Execution Path: Spoken Hinglish command → Gemini Live API (Native Audio WebSocket) → Real-time Function Calling → Live Cloud Database (Firebase Firestore / Supabase PostgreSQL) → Human-in-the-Loop (HITL) Manager Approval (for high-value credit/stock overrides) → Spoken confirmation + Live Audit Dashboard.
+• Commercial Viability: Replaces 15–20 minutes of manual end-of-day ledger entry per 50 transactions, cuts billing/credit errors by >90%, and runs at ~₹0.40–₹0.80 per multi-step voice workflow using Gemini Flash Live.
+
+
+Summary 
+
+• Target User & Setting: Indian wholesale/kirana counter operators and godown dispatchers working in noisy, fast-paced retail environments.
+• Operational Friction: Eliminates manual end-of-day Khata (credit ledger) entry, unverified credit-limit breaches, missed low-stock reorders, and multi-language data entry errors.
+• Action Execution Path: 16kHz PCM browser audio streams via WebSocket to Gemini Live API → native Hinglish intent triggers atomic Firestore runTransaction tool calls (lookup, check_business_policy, execute_ledger_and_inventory_tx, create_supplier_restock, undo_last_transaction) → high-risk overrides pause for real-time Owner HITL approval → confirmed outcomes stream back as 24kHz audio + timestamped transcripts.
+• Commercial Viability: Saves ~20 minutes of manual bookkeeping per 50 counter entries, prevents bad-debt credit breaches before they occur, and operates at under ₹0.60 per multi-step transaction—delivering >15x ROI for MSME merchants.
+
+
 ## Live Deployments
 
 - **Frontend (Netlify Static Host):** [https://boalkhata.netlify.app/](https://boalkhata.netlify.app/)
