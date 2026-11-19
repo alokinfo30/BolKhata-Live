@@ -1,8 +1,11 @@
-# BolKhata Live
+# BolKhata Live 
 
 **BolKhata Live** is a real-time **Hinglish voice operations agent** built for Indian wholesale and kirana distribution counters. It combines low-latency bidirectional audio streaming (`Gemini Live API`) with live **Firebase Firestore** ACID ledger transactions, inventory tracking, Human-in-the-Loop (HITL) manager overrides, dynamic UPI QR payment generation, and operational analytics.
 
-[---](https://boalkhata.netlify.app/)
+[Click here for Backend URL
+](https://bolkhata-live.onrender.com/)
+
+[Click here for Frontend URL](https://boalkhata.netlify.app/)
 
 ## Live Deployments
 
