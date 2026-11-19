@@ -9,8 +9,8 @@
 
 ## Live Deployments
 
-- **Frontend (Netlify Static Host):** `https://boalkhata.netlify.app/`
-- **Backend API & WebSocket Server (Render Docker):** `https://bolkhata-live.onrender.com/`
+- **Frontend (Netlify Static Host):** `[https://boalkhata.netlify.app/](https://boalkhata.netlify.app/)`
+- **Backend API & WebSocket Server (Render Docker):** `[https://bolkhata-live.onrender.com/](https://bolkhata-live.onrender.com/)`
 - **Full-Stack Hosted App (AI Studio Cloud Run):** `https://ais-pre-36crxmm6aatbkmxysccgd5-440468285390.asia-east1.run.app`
 
 > When running on `*.netlify.app`, the client (`src/services/backendConfig.ts`) automatically routes `/api/*` HTTP calls and `/ws/live` WebSocket connections to `https://bolkhata-live.onrender.com` unless overridden via `VITE_API_BASE_URL` or the in-app Backend URL bar.
