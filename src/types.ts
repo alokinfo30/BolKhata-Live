@@ -6,6 +6,15 @@ export type SentimentLabel = 'POSITIVE' | 'NEUTRAL' | 'FRICTION';
 export type ReceiptStatus = 'ISSUED' | 'SENT' | 'VOIDED';
 export type NotificationChannel = 'WHATSAPP' | 'SMS' | 'IN_APP' | 'BROADCAST';
 export type NotificationStatus = 'DISPATCHED' | 'DELIVERED' | 'FAILED';
+export type DeliveryStatus = 'PENDING' | 'OUT_FOR_DELIVERY' | 'DELIVERED' | 'CANCELLED';
+export type ComplaintCategory =
+  | 'QUALITY'
+  | 'QUANTITY_SHORTAGE'
+  | 'DELIVERY_DELAY'
+  | 'BILLING'
+  | 'OTHER';
+export type ComplaintSeverity = 'LOW' | 'MEDIUM' | 'HIGH';
+export type ComplaintStatus = 'OPEN' | 'IN_PROGRESS' | 'RESOLVED';
 
 export type TraceStepType =
   | 'VOICE_INTENT'
@@ -16,6 +25,63 @@ export type TraceStepType =
   | 'UNDO'
   | 'RESTOCK'
   | 'ERROR';
+
+export interface DeliveryRecord {
+  id: string;
+  ownerId: string;
+  delivery_id: string;
+  customer_id: string;
+  customer_name: string;
+  order_summary: string;
+  status: DeliveryStatus;
+  note: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface CustomerComplaint {
+  id: string;
+  ownerId: string;
+  ticket_number: string;
+  customer_id: string;
+  customer_name: string;
+  category: ComplaintCategory;
+  severity: ComplaintSeverity;
+  description: string;
+  status: ComplaintStatus;
+  resolution_note: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface OperationalReportOrderRow {
+  tx_id: string;
+  customer_name: string;
+  item_summary: string;
+  type: TxType;
+  total_amount: number;
+  time_label: string;
+}
+
+export interface OperationalReportSnapshot {
+  period: string;
+  period_label: string;
+  date_range_label: string;
+  generated_at: string;
+  completed_orders_count: number;
+  undone_orders_count: number;
+  total_sales_inr: number;
+  udhaar_issued_inr: number;
+  jama_collected_inr: number;
+  cash_sales_inr: number;
+  outstanding_udhaar_total_inr: number;
+  pending_deliveries_count: number;
+  open_complaints_count: number;
+  low_stock_skus_count: number;
+  top_items: Array<{ item_name: string; qty: number; unit: string; total_inr: number }>;
+  orders: OperationalReportOrderRow[];
+  spoken_summary_hinglish: string;
+}
 
 export interface Receipt {
   id: string;

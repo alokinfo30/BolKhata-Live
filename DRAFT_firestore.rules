@@ -283,6 +283,52 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidDeliveryRecord(data) {
+      return data.keys().hasAll([
+          'ownerId', 'delivery_id', 'customer_id', 'customer_name',
+          'order_summary', 'status', 'note', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'delivery_id', 'customer_id', 'customer_name',
+          'order_summary', 'status', 'note', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && isValidId(data.delivery_id) && data.delivery_id.size() <= 64
+        && data.customer_id is string && data.customer_id.size() <= 128
+        && data.customer_name is string && data.customer_name.size() >= 1 && data.customer_name.size() <= 120
+        && data.order_summary is string && data.order_summary.size() >= 1 && data.order_summary.size() <= 240
+        && data.status in ['PENDING', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED']
+        && data.note is string && data.note.size() <= 300
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCustomerComplaint(data) {
+      return data.keys().hasAll([
+          'ownerId', 'ticket_number', 'customer_id', 'customer_name',
+          'category', 'severity', 'description', 'status',
+          'resolution_note', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'ticket_number', 'customer_id', 'customer_name',
+          'category', 'severity', 'description', 'status',
+          'resolution_note', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.ticket_number is string && data.ticket_number.size() >= 2 && data.ticket_number.size() <= 40
+        && data.customer_id is string && data.customer_id.size() <= 128
+        && data.customer_name is string && data.customer_name.size() >= 1 && data.customer_name.size() <= 120
+        && data.category in ['QUALITY', 'QUANTITY_SHORTAGE', 'DELIVERY_DELAY', 'BILLING', 'OTHER']
+        && data.severity in ['LOW', 'MEDIUM', 'HIGH']
+        && data.description is string && data.description.size() >= 1 && data.description.size() <= 500
+        && data.status in ['OPEN', 'IN_PROGRESS', 'RESOLVED']
+        && data.resolution_note is string && data.resolution_note.size() <= 300
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     // Customers Collection (PII isolated to ownerId)
     match /customers/{customerId} {
       allow get: if isValidId(customerId) && isOwnerOfExisting();
@@ -473,6 +519,46 @@ service cloud.firestore {
         && existing().status == 'DISPATCHED'
         && incoming().status in ['DELIVERED', 'FAILED']
         && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // Delivery Tracking Collection (PII isolated to ownerId)
+    match /deliveries/{deliveryId} {
+      allow get: if isValidId(deliveryId) && isOwnerOfExisting();
+      allow list: if isVerifiedUser() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerifiedUser()
+        && isValidId(deliveryId)
+        && isValidDeliveryRecord(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isOwnerOfExisting()
+        && isValidId(deliveryId)
+        && isValidDeliveryRecord(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'note', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // Customer Complaints Collection (PII isolated to ownerId)
+    match /complaints/{complaintId} {
+      allow get: if isValidId(complaintId) && isOwnerOfExisting();
+      allow list: if isVerifiedUser() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerifiedUser()
+        && isValidId(complaintId)
+        && isValidCustomerComplaint(incoming())
+        && incoming().status == 'OPEN'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isOwnerOfExisting()
+        && isValidId(complaintId)
+        && isValidCustomerComplaint(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && existing().status != 'RESOLVED'
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'resolution_note', 'updatedAt']);
       allow delete: if false;
     }
   }

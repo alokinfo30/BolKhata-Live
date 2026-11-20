@@ -1,12 +1,18 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  AudioLines,
+  BarChart3,
   BellRing,
   Check,
   Clock,
+  Command,
   Copy,
+  Download,
   Edit3,
   FileText,
+  Globe,
+  MessageSquareWarning,
   Mic,
   MicOff,
   MoreHorizontal,
@@ -17,33 +23,57 @@ import {
   Send,
   Server,
   ShieldAlert,
+  Truck,
   Volume2,
   X,
 } from 'lucide-react';
 import { Timestamp } from 'firebase/firestore';
 import { QRCodeSVG } from 'qrcode.react';
 import { VoiceWaveform } from './VoiceWaveform';
+import { InlineAutoSuggestTooltip } from './VoiceAutoSuggestTooltip';
 import {
   getConfiguredBackendUrl,
   isStaticHostingWithoutBackend,
   setConfiguredBackendUrl,
 } from '../services/backendConfig';
+import {
+  downloadOperationalReport,
+  formatOperationalReportText,
+} from '../utils/operationsReports';
+import {
+  AVAILABLE_VOICE_COMMANDS_CATALOG,
+  computeOperationalImpact,
+  getContextualAutoSuggestions,
+  type VoiceCommandCategory,
+  type VoiceLanguagePreset,
+  type WorkspaceTab,
+} from '../utils/voiceSuggestions';
 import type {
   ActiveBillPreview,
   AgentTraceItem,
   ApprovalRequest,
+  ComplaintStatus,
   Customer,
+  CustomerComplaint,
+  DeliveryRecord,
+  DeliveryStatus,
   InventoryItem,
   LedgerTransaction,
+  OperationalReportSnapshot,
   PersistedVoiceTranscript,
+  Receipt,
+  RestockOrder,
   TranscriptMessage,
 } from '../types';
 
 interface CounterWorkspaceProps {
+  activeTab: WorkspaceTab;
   isConnecting: boolean;
   isConnected: boolean;
   isMuted: boolean;
   setIsMuted: (val: boolean) => void;
+  noisyEnvMode: boolean;
+  setNoisyEnvMode: (val: boolean) => void;
   isAgentSpeaking: boolean;
   micLevel: number;
   latencyMs: number | null;
@@ -68,6 +98,8 @@ interface CounterWorkspaceProps {
   transactions: LedgerTransaction[];
   inventory: InventoryItem[];
   customers: Customer[];
+  restocks: RestockOrder[];
+  receipts: Receipt[];
   activeBillPreview: ActiveBillPreview | null;
   onRecordJamaPayment: (customer: Customer, amount: number) => Promise<void>;
   onQuickLookup?: (
@@ -81,6 +113,29 @@ interface CounterWorkspaceProps {
     customerId?: string;
     transactionId?: string;
   }) => void;
+  deliveries: DeliveryRecord[];
+  complaints: CustomerComplaint[];
+  latestOperationalReport: OperationalReportSnapshot | null;
+  reportLoading?: boolean;
+  onDismissReport: () => void;
+  onRunQuickReport: (period: string) => Promise<void>;
+  onUpdateDeliveryStatus: (deliveryId: string, status: DeliveryStatus) => Promise<void>;
+  onQuickLogDelivery: (
+    customerName: string,
+    status: DeliveryStatus,
+    orderSummary?: string
+  ) => Promise<void>;
+  onUpdateComplaintStatus: (
+    complaintId: string,
+    status: Extract<ComplaintStatus, 'IN_PROGRESS' | 'RESOLVED'>
+  ) => Promise<void>;
+  onQuickLogComplaint: (
+    customerName: string,
+    description: string,
+    category?: string
+  ) => Promise<void>;
+  draftCommand?: string | null;
+  onConsumeDraftCommand?: () => void;
 }
 
 const DEMO_PROMPTS = [
@@ -88,6 +143,13 @@ const DEMO_PROMPTS = [
   'Haan, confirm kar do.',
   'Ab Verma Traders ko 50 peti refined oil udhaar pe bhej do.',
   'Galti ho gayi, pichli entry cancel karo.',
+];
+
+const GENERAL_OPS_PROMPTS = [
+  'Aaj ki sales ka summary batao.',
+  'Rahul ki delivery pending mark kar do.',
+  'Kal ke orders ka report bana do.',
+  'Is customer ki complaint register karo.',
 ];
 
 function formatInr(amount: number): string {
@@ -199,10 +261,13 @@ function detectMessageEntities(
 }
 
 export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
+  activeTab,
   isConnecting,
   isConnected,
   isMuted,
   setIsMuted,
+  noisyEnvMode,
+  setNoisyEnvMode,
   isAgentSpeaking,
   micLevel,
   latencyMs,
@@ -227,15 +292,45 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
   transactions,
   inventory,
   customers,
+  restocks,
+  receipts,
   activeBillPreview,
   onRecordJamaPayment,
   onQuickLookup,
   onManualUndo,
   undoBusy,
   onOpenReceiptModal,
+  deliveries,
+  complaints,
+  latestOperationalReport,
+  reportLoading = false,
+  onDismissReport,
+  onRunQuickReport,
+  onUpdateDeliveryStatus,
+  onQuickLogDelivery,
+  onUpdateComplaintStatus,
+  onQuickLogComplaint,
+  draftCommand,
+  onConsumeDraftCommand,
 }) => {
   const [commandInput, setCommandInput] = useState('');
+  const commandInputRef = useRef<HTMLInputElement | null>(null);
+  const autoSuggestBoxRef = useRef<HTMLDivElement | null>(null);
+  const [autoSuggestOpen, setAutoSuggestOpen] = useState(false);
+  const [autoSuggestIndex, setAutoSuggestIndex] = useState(0);
+  const [cmdCategoryFilter, setCmdCategoryFilter] = useState<VoiceCommandCategory>('all');
+  const [cmdLanguageFilter, setCmdLanguageFilter] = useState<'all' | VoiceLanguagePreset>('all');
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+  const [reportCopied, setReportCopied] = useState(false);
+  const [opsTab, setOpsTab] = useState<'deliveries' | 'complaints'>('deliveries');
+  const [showAddDelivery, setShowAddDelivery] = useState(false);
+  const [newDeliveryCustomer, setNewDeliveryCustomer] = useState('');
+  const [newDeliverySummary, setNewDeliverySummary] = useState('');
+  const [showAddComplaint, setShowAddComplaint] = useState(false);
+  const [newComplaintCustomer, setNewComplaintCustomer] = useState('');
+  const [newComplaintCategory, setNewComplaintCategory] = useState('QUALITY');
+  const [newComplaintDesc, setNewComplaintDesc] = useState('');
+  const [opsBusyId, setOpsBusyId] = useState<string | null>(null);
 
   const [quickMenuMsgId, setQuickMenuMsgId] = useState<string | null>(null);
   const [quickActionTab, setQuickActionTab] = useState<'lookup' | 'correct'>('lookup');
@@ -296,6 +391,80 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
   const pendingApprovals = approvals.filter((a) => a.status === 'PENDING');
   const lowStockItems = inventory.filter((i) => i.stock_qty < i.reorder_threshold);
   const completedTxs = transactions.filter((t) => t.status === 'COMPLETED');
+
+  const recentUserInputs = [
+    ...liveTranscripts
+      .filter((m) => m.role === 'user')
+      .map((m) => m.text)
+      .reverse(),
+    ...persistedTranscripts
+      .filter((t) => t.role === 'user')
+      .map((t) => t.text)
+      .reverse(),
+  ].slice(0, 12);
+
+  const autoSuggestions = getContextualAutoSuggestions({
+    activeTab,
+    currentQuery: commandInput,
+    recentUserInputs,
+    customers,
+    inventory,
+    approvals,
+    deliveries,
+    complaints,
+    transactions,
+    maxItems: 5,
+  });
+
+  const impactMetrics = computeOperationalImpact({
+    transactions,
+    approvals,
+    restocks,
+    deliveries,
+    complaints,
+    receipts,
+  });
+
+  const filteredVoiceCommands = AVAILABLE_VOICE_COMMANDS_CATALOG.filter((item) => {
+    const matchesCategory = cmdCategoryFilter === 'all' || item.category === cmdCategoryFilter;
+    const matchesLanguage = cmdLanguageFilter === 'all' || item.language === cmdLanguageFilter;
+    return matchesCategory && matchesLanguage;
+  });
+
+  useEffect(() => {
+    if (draftCommand) {
+      setCommandInput(draftCommand);
+      onConsumeDraftCommand?.();
+      commandInputRef.current?.focus();
+    }
+  }, [draftCommand, onConsumeDraftCommand]);
+
+  useEffect(() => {
+    setAutoSuggestIndex(0);
+  }, [commandInput, autoSuggestOpen]);
+
+  useEffect(() => {
+    const onOutsideClick = (e: MouseEvent) => {
+      if (autoSuggestBoxRef.current && !autoSuggestBoxRef.current.contains(e.target as Node)) {
+        setAutoSuggestOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onOutsideClick);
+    return () => document.removeEventListener('mousedown', onOutsideClick);
+  }, []);
+
+  const handleTriggerCommand = (command: string) => {
+    const cleaned = command.trim();
+    if (!cleaned) return;
+    setAutoSuggestOpen(false);
+    if (isConnected) {
+      onSendTextTurn(cleaned);
+      setCommandInput('');
+    } else {
+      setCommandInput(cleaned);
+      commandInputRef.current?.focus();
+    }
+  };
 
   // Sync UPI QR code amount & bill metadata automatically on active voice read-back or confirmation
   useEffect(() => {
@@ -590,6 +759,50 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
         </div>
       </div>
 
+      {/* Verifiable Operational Impact Strip (Real Live Firestore Counts) */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-white border border-slate-200 rounded-xl px-4 py-3.5">
+          <div className="text-xs text-slate-500">Tasks Automated</div>
+          <div className="font-mono text-2xl font-bold text-slate-900 tabular-nums mt-1">
+            {impactMetrics.completedTasksCount}
+          </div>
+          <div className="text-[11px] text-slate-500 mt-1">
+            Ledger, deliveries, complaints, restocks &amp; receipts
+          </div>
+        </div>
+
+        <div className="bg-white border border-slate-200 rounded-xl px-4 py-3.5">
+          <div className="text-xs text-slate-500">Est. Counter Time Saved</div>
+          <div className="font-mono text-2xl font-bold text-emerald-700 tabular-nums mt-1">
+            {impactMetrics.estimatedMinutesSaved} min
+          </div>
+          <div className="text-[11px] text-slate-500 mt-1">
+            Basis: 2 min saved per automated counter action
+          </div>
+        </div>
+
+        <div className="bg-white border border-slate-200 rounded-xl px-4 py-3.5">
+          <div className="text-xs text-slate-500">Errors Guarded &amp; Recovered</div>
+          <div className="font-mono text-2xl font-bold text-blue-700 tabular-nums mt-1">
+            {impactMetrics.errorsPreventedOrRecovered}
+          </div>
+          <div className="text-[11px] text-slate-500 mt-1 font-mono tabular-nums">
+            {impactMetrics.hitlGuardsTriggered} HITL · {impactMetrics.undoRecoveries} Undo ·{' '}
+            {impactMetrics.autoRestocksTriggered} Restocks
+          </div>
+        </div>
+
+        <div className="bg-white border border-slate-200 rounded-xl px-4 py-3.5">
+          <div className="text-xs text-slate-500">Voice Agent Responsiveness</div>
+          <div className="font-mono text-2xl font-bold text-slate-900 tabular-nums mt-1">
+            {avgLatencyMs !== null ? `${avgLatencyMs} ms` : 'Ready'}
+          </div>
+          <div className="text-[11px] text-slate-500 mt-1">
+            Hindi, English, Hinglish &amp; regional · Noise Gate {noisyEnvMode ? 'On' : 'Off'}
+          </div>
+        </div>
+      </div>
+
       {/* Main 2-Column Operations Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left Column: Live Voice Console + HITL Approvals */}
@@ -602,11 +815,24 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
                   01. Live Counter Voice Agent
                 </h2>
                 <p className="text-xs text-slate-500 mt-1">
-                  Gemini Native Audio · 16kHz PCM Mic Capture · Instant Barge-In Support
+                  Hindi, English, Hinglish &amp; Indian Regional Languages · 16kHz PCM · Barge-In &amp; Noise Gate
                 </p>
               </div>
 
-              <div className="flex items-center gap-2.5 shrink-0">
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setNoisyEnvMode(!noisyEnvMode)}
+                  title="Filter low-level shop & market background noise from mic input"
+                  className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+                    noisyEnvMode
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100'
+                      : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  <AudioLines className="w-3.5 h-3.5" />
+                  Noise Gate: {noisyEnvMode ? 'On' : 'Off'}
+                </button>
                 {isConnected && (
                   <>
                     {!textOnlyMode && (
@@ -1021,48 +1247,266 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
               </div>
             </div>
 
-            {/* Hybrid Hinglish Command Input + Quick Demo Prompts */}
+            {/* Hybrid Hinglish Command Input + Context-Aware Auto-Suggest Tooltip */}
             <div className="space-y-3 pt-1">
-              <form onSubmit={handleSubmitCommand} className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={commandInput}
-                  onChange={(e) => setCommandInput(e.target.value)}
-                  disabled={!isConnected}
-                  placeholder={
-                    isConnected
-                      ? 'Optional typed Hinglish command or correction...'
-                      : 'Start Counter Voice to enable live voice & hybrid commands'
-                  }
-                  className="flex-1 px-3.5 py-2 text-sm bg-white border border-slate-200 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-700 disabled:bg-slate-50"
+              <div ref={autoSuggestBoxRef} className="relative">
+                <InlineAutoSuggestTooltip
+                  open={autoSuggestOpen}
+                  activeTab={activeTab}
+                  hasRecentHistory={recentUserInputs.length > 0}
+                  isConnected={isConnected}
+                  suggestions={autoSuggestions}
+                  highlightedIndex={autoSuggestIndex}
+                  onHighlight={setAutoSuggestIndex}
+                  onSelect={handleTriggerCommand}
+                  onClose={() => setAutoSuggestOpen(false)}
                 />
-                <button
-                  type="submit"
-                  disabled={!isConnected || !commandInput.trim()}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
-                >
-                  <Send className="w-3.5 h-3.5" />
-                  Send
-                </button>
-              </form>
 
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs text-slate-500 mr-1">Demo Turns:</span>
-                {DEMO_PROMPTS.map((prompt, idx) => (
+                <form onSubmit={handleSubmitCommand} className="flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <input
+                      ref={commandInputRef}
+                      type="text"
+                      value={commandInput}
+                      onFocus={() => setAutoSuggestOpen(true)}
+                      onChange={(e) => {
+                        setCommandInput(e.target.value);
+                        setAutoSuggestOpen(true);
+                      }}
+                      onKeyDown={(e) => {
+                        if (!autoSuggestOpen || autoSuggestions.length === 0) return;
+                        if (e.key === 'ArrowDown') {
+                          e.preventDefault();
+                          setAutoSuggestIndex((i) => (i + 1) % autoSuggestions.length);
+                        } else if (e.key === 'ArrowUp') {
+                          e.preventDefault();
+                          setAutoSuggestIndex(
+                            (i) => (i - 1 + autoSuggestions.length) % autoSuggestions.length
+                          );
+                        } else if (e.key === 'Escape') {
+                          setAutoSuggestOpen(false);
+                        } else if (e.key === 'Enter' && !commandInput.trim()) {
+                          e.preventDefault();
+                          const picked = autoSuggestions[autoSuggestIndex];
+                          if (picked) handleTriggerCommand(picked.command);
+                        }
+                      }}
+                      placeholder={
+                        isConnected
+                          ? 'Type or click Auto-Suggest for Hinglish, Hindi, English & regional commands...'
+                          : 'Focus or type to browse Auto-Suggest commands (start Voice to send live)'
+                      }
+                      className="w-full px-3.5 py-2 text-sm bg-white border border-slate-200 rounded-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-700"
+                    />
+                  </div>
+
                   <button
-                    key={idx}
                     type="button"
-                    disabled={!isConnected}
-                    onClick={() => onSendTextTurn(prompt)}
-                    className="text-xs px-2.5 py-1.5 rounded-md border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 disabled:opacity-40 transition-colors text-left truncate max-w-[260px]"
-                    title={prompt}
+                    onClick={() => setAutoSuggestOpen((v) => !v)}
+                    aria-expanded={autoSuggestOpen}
+                    title="Show context-aware voice command suggestions"
+                    className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+                      autoSuggestOpen
+                        ? 'bg-blue-50 border-blue-300 text-blue-800'
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                    }`}
                   >
-                    Turn {idx + 1}: {prompt}
+                    <Command className="w-3.5 h-3.5" />
+                    Auto-Suggest
                   </button>
-                ))}
+
+                  <button
+                    type="submit"
+                    disabled={!isConnected || !commandInput.trim()}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    Send
+                  </button>
+                </form>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-slate-500 mr-1">Demo Turns:</span>
+                  {DEMO_PROMPTS.map((prompt, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      disabled={!isConnected}
+                      onClick={() => onSendTextTurn(prompt)}
+                      className="text-xs px-2.5 py-1.5 rounded-md border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 disabled:opacity-40 transition-colors text-left truncate max-w-[260px]"
+                      title={prompt}
+                    >
+                      Turn {idx + 1}: {prompt}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-slate-500 mr-1">General Ops:</span>
+                  {GENERAL_OPS_PROMPTS.map((prompt, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      disabled={!isConnected}
+                      onClick={() => onSendTextTurn(prompt)}
+                      className="text-xs px-2.5 py-1.5 rounded-md border border-blue-200 bg-blue-50/70 text-blue-900 hover:bg-blue-100 disabled:opacity-40 transition-colors text-left truncate max-w-[260px]"
+                      title={prompt}
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           </section>
+
+          {/* Live Sales & Orders Report Card (triggered by voice or quick report button) */}
+          {latestOperationalReport && (
+            <section className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="font-display text-lg font-semibold text-slate-900 inline-flex items-center gap-2">
+                    <BarChart3 className="w-4 h-4 text-blue-700" />
+                    Sales &amp; Orders Report — {latestOperationalReport.period_label}
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {latestOperationalReport.date_range_label} · Generated{' '}
+                    {latestOperationalReport.generated_at}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  {(['today', 'yesterday', 'last_7_days'] as const).map((p) => (
+                    <button
+                      key={p}
+                      type="button"
+                      disabled={reportLoading}
+                      onClick={() => void onRunQuickReport(p)}
+                      className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors whitespace-nowrap ${
+                        latestOperationalReport.period === p
+                          ? 'bg-slate-900 text-white border-slate-900'
+                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      {p === 'today' ? 'Aaj' : p === 'yesterday' ? 'Kal' : '7 Days'}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={onDismissReport}
+                    className="p-1 text-slate-400 hover:text-slate-700"
+                    aria-label="Close report"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-800 leading-relaxed">
+                {latestOperationalReport.spoken_summary_hinglish}
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="border border-slate-200 rounded-lg p-3">
+                  <div className="text-[11px] text-slate-500">Total Sales</div>
+                  <div className="font-mono text-base font-bold text-slate-900 tabular-nums mt-0.5">
+                    {formatInr(latestOperationalReport.total_sales_inr)}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5 font-mono tabular-nums">
+                    {latestOperationalReport.completed_orders_count} entries
+                  </div>
+                </div>
+                <div className="border border-slate-200 rounded-lg p-3">
+                  <div className="text-[11px] text-slate-500">Udhaar / Cash</div>
+                  <div className="font-mono text-sm font-semibold text-slate-900 tabular-nums mt-0.5">
+                    {formatInr(latestOperationalReport.udhaar_issued_inr)}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5 font-mono tabular-nums">
+                    Cash {formatInr(latestOperationalReport.cash_sales_inr)}
+                  </div>
+                </div>
+                <div className="border border-slate-200 rounded-lg p-3">
+                  <div className="text-[11px] text-slate-500">Jama Collected</div>
+                  <div className="font-mono text-base font-bold text-emerald-700 tabular-nums mt-0.5">
+                    {formatInr(latestOperationalReport.jama_collected_inr)}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5 font-mono tabular-nums">
+                    Bal {formatInr(latestOperationalReport.outstanding_udhaar_total_inr)}
+                  </div>
+                </div>
+                <div className="border border-slate-200 rounded-lg p-3">
+                  <div className="text-[11px] text-slate-500">Open Ops</div>
+                  <div className="font-mono text-sm font-semibold text-amber-800 tabular-nums mt-0.5">
+                    {latestOperationalReport.pending_deliveries_count} deliveries
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5 font-mono tabular-nums">
+                    {latestOperationalReport.open_complaints_count} complaints
+                  </div>
+                </div>
+              </div>
+
+              {latestOperationalReport.orders.length > 0 && (
+                <div className="border border-slate-200 rounded-lg overflow-hidden">
+                  <div className="max-h-52 overflow-y-auto divide-y divide-slate-100">
+                    {latestOperationalReport.orders.slice(0, 12).map((row) => (
+                      <div
+                        key={row.tx_id}
+                        className="px-3.5 py-2 flex items-center justify-between gap-3 text-xs bg-white"
+                      >
+                        <div className="min-w-0">
+                          <span className="font-mono text-slate-400 mr-2 tabular-nums">
+                            {row.time_label}
+                          </span>
+                          <span className="font-semibold text-slate-900">{row.customer_name}</span>
+                          <span className="text-slate-500"> · {row.item_summary}</span>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0 font-mono tabular-nums">
+                          <span className="text-[11px] text-slate-500">{row.type}</span>
+                          <span className="font-semibold text-slate-900">
+                            {formatInr(row.total_amount)}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(
+                        formatOperationalReportText(latestOperationalReport)
+                      );
+                      setReportCopied(true);
+                      setTimeout(() => setReportCopied(false), 1800);
+                    } catch {
+                      // ignore clipboard issues
+                    }
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 whitespace-nowrap"
+                >
+                  {reportCopied ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-700" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                  {reportCopied ? 'Copied' : 'Copy Report'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => downloadOperationalReport(latestOperationalReport)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 whitespace-nowrap"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Download Report (.txt)
+                </button>
+              </div>
+            </section>
+          )}
 
           {/* Human-in-the-Loop (HITL) Manager Approval Panel */}
           <section className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
@@ -1143,6 +1587,107 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
                 })}
               </div>
             )}
+          </section>
+          {/* Available Voice Commands Directory (Multilingual & Tool-Mapped) */}
+          <section className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="font-display text-lg font-semibold text-slate-900">
+                  Available Voice Commands
+                </h2>
+                <p className="text-xs text-slate-500 mt-1">
+                  Speak naturally in Hinglish, Hindi, English, or Indian regional languages — the agent selects the right tool, executes in Firestore, and confirms results.
+                </p>
+              </div>
+              <span className="inline-flex items-center gap-1.5 text-xs text-slate-500 whitespace-nowrap shrink-0">
+                <Globe className="w-3.5 h-3.5" />
+                {filteredVoiceCommands.length} examples
+              </span>
+            </div>
+
+            {/* Interactive Category & Language Filter Controls */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pb-1 border-b border-slate-200">
+              <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg">
+                {(
+                  [
+                    ['all', 'All Tools'],
+                    ['inventory', 'Inventory'],
+                    ['orders', 'Orders & Deliveries'],
+                    ['reports', 'Reports'],
+                    ['complaints', 'Complaints & Safety'],
+                  ] as const
+                ).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setCmdCategoryFilter(id)}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                      cmdCategoryFilter === id
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1">
+                {(
+                  [
+                    ['all', 'All Languages'],
+                    ['hinglish', 'Hinglish'],
+                    ['hindi', 'Hindi'],
+                    ['english', 'English'],
+                    ['regional', 'Regional'],
+                  ] as const
+                ).map(([langId, langLabel]) => (
+                  <button
+                    key={langId}
+                    type="button"
+                    onClick={() => setCmdLanguageFilter(langId)}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors whitespace-nowrap shrink-0 ${
+                      cmdLanguageFilter === langId
+                        ? 'bg-slate-900 text-white border-slate-900'
+                        : 'bg-white text-slate-600 border-slate-200 hover:text-slate-900'
+                    }`}
+                  >
+                    {langLabel}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="divide-y divide-slate-100 max-h-96 overflow-y-auto pr-1">
+              {filteredVoiceCommands.map((item) => (
+                <div
+                  key={item.id}
+                  className="py-3 flex items-start justify-between gap-4"
+                >
+                  <div className="min-w-0 space-y-1">
+                    <div className="text-sm font-semibold text-slate-900 leading-snug">
+                      &ldquo;{item.command}&rdquo;
+                    </div>
+                    <p className="text-xs text-slate-600 leading-relaxed">
+                      {item.description}
+                    </p>
+                    <div className="text-[11px] text-slate-500">
+                      <span className="font-medium text-slate-700">{item.languageLabel}</span>
+                      <span aria-hidden="true"> · </span>
+                      <span className="font-mono text-[11px]">{item.tools}</span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleTriggerCommand(item.command)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors whitespace-nowrap shrink-0 mt-0.5"
+                  >
+                    <Mic className="w-3.5 h-3.5" />
+                    {isConnected ? 'Run Live' : 'Try Command'}
+                  </button>
+                </div>
+              ))}
+            </div>
           </section>
         </div>
 
@@ -1522,6 +2067,331 @@ export const CounterWorkspace: React.FC<CounterWorkspaceProps> = ({
                 )}
               </div>
             </div>
+          </section>
+
+          {/* 06. Deliveries, Complaints & Instant Reports */}
+          <section className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="font-display text-lg font-semibold text-slate-900">
+                  06. Deliveries, Complaints &amp; Reports
+                </h2>
+                <p className="text-xs text-slate-500 mt-1">
+                  Synced with voice commands &ldquo;delivery pending&rdquo;, &ldquo;complaint register&rdquo;, &amp; sales reports
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  disabled={reportLoading}
+                  onClick={() => void onRunQuickReport('today')}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 disabled:opacity-50 whitespace-nowrap"
+                >
+                  <BarChart3 className="w-3.5 h-3.5" />
+                  Aaj Summary
+                </button>
+                <button
+                  type="button"
+                  disabled={reportLoading}
+                  onClick={() => void onRunQuickReport('yesterday')}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap"
+                >
+                  Kal Report
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 border-b border-slate-200 pb-2.5">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setOpsTab('deliveries')}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                    opsTab === 'deliveries'
+                      ? 'bg-slate-900 text-white'
+                      : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  <Truck className="w-3.5 h-3.5" />
+                  Deliveries ({deliveries.filter((d) => d.status !== 'DELIVERED' && d.status !== 'CANCELLED').length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOpsTab('complaints')}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                    opsTab === 'complaints'
+                      ? 'bg-slate-900 text-white'
+                      : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  <MessageSquareWarning className="w-3.5 h-3.5" />
+                  Complaints ({complaints.filter((c) => c.status !== 'RESOLVED').length})
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() =>
+                  opsTab === 'deliveries'
+                    ? setShowAddDelivery((v) => !v)
+                    : setShowAddComplaint((v) => !v)
+                }
+                className="text-xs font-medium text-blue-700 hover:text-blue-800 whitespace-nowrap"
+              >
+                {opsTab === 'deliveries'
+                  ? showAddDelivery
+                    ? 'Cancel'
+                    : '+ Log Delivery'
+                  : showAddComplaint
+                  ? 'Cancel'
+                  : '+ Log Complaint'}
+              </button>
+            </div>
+
+            {opsTab === 'deliveries' ? (
+              <div className="space-y-3">
+                {showAddDelivery && (
+                  <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <input
+                        type="text"
+                        value={newDeliveryCustomer}
+                        onChange={(e) => setNewDeliveryCustomer(e.target.value)}
+                        placeholder="Customer / Party name (e.g. Rahul)"
+                        className="px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md"
+                      />
+                      <input
+                        type="text"
+                        value={newDeliverySummary}
+                        onChange={(e) => setNewDeliverySummary(e.target.value)}
+                        placeholder="Order note (optional)"
+                        className="px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md"
+                      />
+                    </div>
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        disabled={!newDeliveryCustomer.trim() || opsBusyId === 'new-del'}
+                        onClick={async () => {
+                          setOpsBusyId('new-del');
+                          try {
+                            await onQuickLogDelivery(
+                              newDeliveryCustomer,
+                              'PENDING',
+                              newDeliverySummary
+                            );
+                            setNewDeliveryCustomer('');
+                            setNewDeliverySummary('');
+                            setShowAddDelivery(false);
+                          } finally {
+                            setOpsBusyId(null);
+                          }
+                        }}
+                        className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-700 rounded-md hover:bg-blue-800 disabled:opacity-40"
+                      >
+                        Mark Pending
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {deliveries.length === 0 ? (
+                  <p className="text-xs text-slate-500 py-4 text-center">
+                    No deliveries tracked yet. Try saying &ldquo;Rahul ki delivery pending mark kar do.&rdquo;
+                  </p>
+                ) : (
+                  <div className="divide-y divide-slate-100 max-h-60 overflow-y-auto">
+                    {deliveries.slice(0, 8).map((del) => {
+                      const busy = opsBusyId === del.id;
+                      return (
+                        <div
+                          key={del.id}
+                          className="py-2.5 flex items-center justify-between gap-3 text-xs"
+                        >
+                          <div className="min-w-0">
+                            <div className="font-semibold text-slate-900 truncate">
+                              {del.customer_name}
+                            </div>
+                            <div className="text-slate-500 truncate">{del.order_summary}</div>
+                            <div className="font-mono text-[11px] text-slate-500 mt-0.5">
+                              Status:{' '}
+                              <span
+                                className={
+                                  del.status === 'PENDING'
+                                    ? 'text-amber-700 font-semibold'
+                                    : del.status === 'OUT_FOR_DELIVERY'
+                                    ? 'text-blue-700 font-semibold'
+                                    : del.status === 'DELIVERED'
+                                    ? 'text-emerald-700 font-semibold'
+                                    : 'text-slate-500'
+                                }
+                              >
+                                {del.status.replace(/_/g, ' ')}
+                              </span>
+                            </div>
+                          </div>
+
+                          {del.status !== 'DELIVERED' && del.status !== 'CANCELLED' && (
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {del.status === 'PENDING' && (
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={async () => {
+                                    setOpsBusyId(del.id);
+                                    try {
+                                      await onUpdateDeliveryStatus(del.id, 'OUT_FOR_DELIVERY');
+                                    } finally {
+                                      setOpsBusyId(null);
+                                    }
+                                  }}
+                                  className="px-2 py-1 text-[11px] font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 whitespace-nowrap"
+                                >
+                                  Dispatch
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={async () => {
+                                  setOpsBusyId(del.id);
+                                  try {
+                                    await onUpdateDeliveryStatus(del.id, 'DELIVERED');
+                                  } finally {
+                                    setOpsBusyId(null);
+                                  }
+                                }}
+                                className="px-2 py-1 text-[11px] font-semibold text-white bg-emerald-700 rounded hover:bg-emerald-800 whitespace-nowrap"
+                              >
+                                Delivered
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {showAddComplaint && (
+                  <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <input
+                        type="text"
+                        value={newComplaintCustomer}
+                        onChange={(e) => setNewComplaintCustomer(e.target.value)}
+                        placeholder="Customer name (optional)"
+                        className="px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md"
+                      />
+                      <select
+                        value={newComplaintCategory}
+                        onChange={(e) => setNewComplaintCategory(e.target.value)}
+                        className="px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md"
+                      >
+                        <option value="QUALITY">Quality Issue</option>
+                        <option value="QUANTITY_SHORTAGE">Quantity Shortage</option>
+                        <option value="DELIVERY_DELAY">Delivery Delay</option>
+                        <option value="BILLING">Billing Discrepancy</option>
+                        <option value="OTHER">Other</option>
+                      </select>
+                    </div>
+                    <input
+                      type="text"
+                      value={newComplaintDesc}
+                      onChange={(e) => setNewComplaintDesc(e.target.value)}
+                      placeholder="Complaint description (e.g. 2 bori damaged rice)"
+                      className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-md"
+                    />
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        disabled={!newComplaintDesc.trim() || opsBusyId === 'new-cmp'}
+                        onClick={async () => {
+                          setOpsBusyId('new-cmp');
+                          try {
+                            await onQuickLogComplaint(
+                              newComplaintCustomer,
+                              newComplaintDesc,
+                              newComplaintCategory
+                            );
+                            setNewComplaintCustomer('');
+                            setNewComplaintDesc('');
+                            setShowAddComplaint(false);
+                          } finally {
+                            setOpsBusyId(null);
+                          }
+                        }}
+                        className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-700 rounded-md hover:bg-blue-800 disabled:opacity-40"
+                      >
+                        Register Complaint
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {complaints.length === 0 ? (
+                  <p className="text-xs text-slate-500 py-4 text-center">
+                    No customer complaints logged. Try saying &ldquo;Is customer ki complaint register karo.&rdquo;
+                  </p>
+                ) : (
+                  <div className="divide-y divide-slate-100 max-h-60 overflow-y-auto">
+                    {complaints.slice(0, 8).map((cmp) => {
+                      const busy = opsBusyId === cmp.id;
+                      return (
+                        <div
+                          key={cmp.id}
+                          className="py-2.5 flex items-start justify-between gap-3 text-xs"
+                        >
+                          <div className="min-w-0 space-y-0.5">
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-[11px] font-semibold text-slate-700">
+                                {cmp.ticket_number}
+                              </span>
+                              <span className="font-semibold text-slate-900 truncate">
+                                {cmp.customer_name}
+                              </span>
+                            </div>
+                            <p className="text-slate-600 leading-snug">{cmp.description}</p>
+                            <div className="font-mono text-[11px] text-slate-500">
+                              {cmp.category} · {cmp.severity} ·{' '}
+                              <span
+                                className={
+                                  cmp.status === 'RESOLVED'
+                                    ? 'text-emerald-700 font-semibold'
+                                    : 'text-amber-700 font-semibold'
+                                }
+                              >
+                                {cmp.status}
+                              </span>
+                            </div>
+                          </div>
+
+                          {cmp.status !== 'RESOLVED' && (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={async () => {
+                                setOpsBusyId(cmp.id);
+                                try {
+                                  await onUpdateComplaintStatus(cmp.id, 'RESOLVED');
+                                } finally {
+                                  setOpsBusyId(null);
+                                }
+                              }}
+                              className="px-2.5 py-1 text-[11px] font-semibold text-white bg-emerald-700 rounded hover:bg-emerald-800 shrink-0 whitespace-nowrap"
+                            >
+                              Resolve
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </section>
         </div>
       </div>

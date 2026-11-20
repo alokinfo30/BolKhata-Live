@@ -14,14 +14,19 @@ import {
   broadcastReceiptsAndNotificationsToAllStores,
   createReceiptAndNotifyStore,
   executeLedgerAndInventoryTx,
+  getSalesAndOrdersReport,
   importCustomersBatch,
   importInventoryBatch,
   logAgentTrace,
   logSentimentFeedback,
   lookupCustomerAndStock,
+  manageDeliveryStatus,
+  registerCustomerComplaint,
   resolveApproval,
   seedShopDataIfEmpty,
   undoLastTransaction,
+  updateComplaintStatusById,
+  updateDeliveryStatusById,
   updateNotificationStatus,
   updateRestockStatus,
   type CreateReceiptNotifyInput,
@@ -40,10 +45,19 @@ import {
   ReceiptNotificationModal,
   type ReceiptModalRequest,
 } from './components/ReceiptNotificationModal';
+import { FloatingTabAutoSuggest } from './components/VoiceAutoSuggestTooltip';
+import {
+  getContextualAutoSuggestions,
+  type WorkspaceTab,
+} from './utils/voiceSuggestions';
 import type {
   AgentTraceItem,
   ApprovalRequest,
+  ComplaintStatus,
   Customer,
+  CustomerComplaint,
+  DeliveryRecord,
+  DeliveryStatus,
   InventoryItem,
   LedgerTransaction,
   NotificationChannel,
@@ -55,7 +69,7 @@ import type {
   StoreNotification,
 } from './types';
 
-type ActiveTab = 'counter' | 'khata' | 'approvals' | 'performance' | 'insights';
+type ActiveTab = WorkspaceTab;
 
 function getMillis(ts: unknown): number {
   if (ts && typeof ts === 'object' && 'toMillis' in ts && typeof (ts as Timestamp).toMillis === 'function') {
@@ -89,10 +103,14 @@ function BolKhataApp() {
   const [persistedTranscripts, setPersistedTranscripts] = useState<PersistedVoiceTranscript[]>([]);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [notifications, setNotifications] = useState<StoreNotification[]>([]);
+  const [deliveries, setDeliveries] = useState<DeliveryRecord[]>([]);
+  const [complaints, setComplaints] = useState<CustomerComplaint[]>([]);
   const [receiptModalReq, setReceiptModalReq] = useState<ReceiptModalRequest | null>(null);
 
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [undoBusy, setUndoBusy] = useState(false);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [draftCommand, setDraftCommand] = useState<string | null>(null);
 
   const prevApprovalStatusesRef = useRef<Map<string, string>>(new Map());
   const locallyHandledApprovalsRef = useRef<Set<string>>(new Set());
@@ -118,6 +136,8 @@ function BolKhataApp() {
         setPersistedTranscripts([]);
         setReceipts([]);
         setNotifications([]);
+        setDeliveries([]);
+        setComplaints([]);
       }
     });
     return () => unsub();
@@ -276,6 +296,30 @@ function BolKhataApp() {
       (err) => handleFirestoreError(err, OperationType.LIST, 'notifications')
     );
 
+    const unsubDeliveries = onSnapshot(
+      query(collection(db, 'deliveries'), where('ownerId', '==', uid)),
+      (snap) => {
+        const list = snap.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as Omit<DeliveryRecord, 'id'>),
+        }));
+        setDeliveries(sortByCreatedDesc(list));
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'deliveries')
+    );
+
+    const unsubComplaints = onSnapshot(
+      query(collection(db, 'complaints'), where('ownerId', '==', uid)),
+      (snap) => {
+        const list = snap.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as Omit<CustomerComplaint, 'id'>),
+        }));
+        setComplaints(sortByCreatedDesc(list));
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'complaints')
+    );
+
     return () => {
       unsubCust();
       unsubInv();
@@ -287,6 +331,8 @@ function BolKhataApp() {
       unsubTranscripts();
       unsubReceipts();
       unsubNotifications();
+      unsubDeliveries();
+      unsubComplaints();
     };
   }, [authReady, user]);
 
@@ -517,6 +563,136 @@ function BolKhataApp() {
 
   const handleMarkNotificationDelivered = async (notificationId: string) => {
     await updateNotificationStatus(notificationId, 'DELIVERED');
+  };
+
+  const handleRunQuickReport = async (period: string) => {
+    if (!user) return;
+    setReportLoading(true);
+    const t0 = performance.now();
+    try {
+      const report = await getSalesAndOrdersReport(user.uid, period);
+      voice.setLatestOperationalReport(report);
+      const elapsed = Math.round(performance.now() - t0);
+      await logAgentTrace(
+        user.uid,
+        'quick_sales_report',
+        'EXECUTED',
+        `Generated ${report.period_label} Report`,
+        `${report.completed_orders_count} entries · Sales ₹${report.total_sales_inr.toLocaleString(
+          'en-IN'
+        )} · Pending Deliveries ${report.pending_deliveries_count}`,
+        elapsed
+      );
+    } finally {
+      setReportLoading(false);
+    }
+  };
+
+  const handleUpdateDeliveryStatus = async (deliveryId: string, status: DeliveryStatus) => {
+    if (!user) return;
+    await updateDeliveryStatusById(deliveryId, status);
+    await logAgentTrace(
+      user.uid,
+      'delivery_status',
+      'EXECUTED',
+      `Delivery Marked ${status.replace(/_/g, ' ')}`,
+      `Updated delivery record ${deliveryId} to ${status}`,
+      0
+    );
+  };
+
+  const handleQuickLogDelivery = async (
+    customerName: string,
+    status: DeliveryStatus,
+    orderSummary?: string
+  ) => {
+    if (!user || !customerName.trim()) return;
+    const t0 = performance.now();
+    const res = await manageDeliveryStatus(user.uid, {
+      customer_name: customerName.trim(),
+      status,
+      order_summary: orderSummary?.trim() || undefined,
+    });
+    const elapsed = Math.round(performance.now() - t0);
+    await logAgentTrace(
+      user.uid,
+      'manage_delivery_status',
+      'EXECUTED',
+      `Delivery ${String(res.status || status)} — ${String(res.customer_name || customerName)}`,
+      String(res.order_summary || 'Counter delivery status updated'),
+      elapsed
+    );
+  };
+
+  const handleUpdateComplaintStatus = async (
+    complaintId: string,
+    status: Extract<ComplaintStatus, 'IN_PROGRESS' | 'RESOLVED'>
+  ) => {
+    if (!user) return;
+    await updateComplaintStatusById(complaintId, status);
+    await logAgentTrace(
+      user.uid,
+      'complaint_status',
+      'EXECUTED',
+      `Complaint Marked ${status}`,
+      `Updated complaint ${complaintId} to ${status}`,
+      0
+    );
+  };
+
+  const handleQuickLogComplaint = async (
+    customerName: string,
+    description: string,
+    category?: string
+  ) => {
+    if (!user || !description.trim()) return;
+    const t0 = performance.now();
+    const res = await registerCustomerComplaint(user.uid, {
+      customer_name: customerName.trim() || undefined,
+      description: description.trim(),
+      category: category || 'OTHER',
+    });
+    const elapsed = Math.round(performance.now() - t0);
+    await logAgentTrace(
+      user.uid,
+      'register_customer_complaint',
+      'EXECUTED',
+      `Complaint ${String(res.ticket_number || '')} Logged`,
+      `${String(res.customer_name || 'Customer')} · ${String(res.description || description)}`,
+      elapsed
+    );
+  };
+
+  const recentUserInputs = [
+    ...voice.liveTranscripts
+      .filter((m) => m.role === 'user')
+      .map((m) => m.text)
+      .reverse(),
+    ...persistedTranscripts
+      .filter((t) => t.role === 'user')
+      .map((t) => t.text)
+      .reverse(),
+  ].slice(0, 12);
+
+  const tabAutoSuggestions = getContextualAutoSuggestions({
+    activeTab,
+    recentUserInputs,
+    customers,
+    inventory,
+    approvals,
+    deliveries,
+    complaints,
+    transactions,
+    maxItems: 5,
+  });
+
+  const handleExecuteFloatingSuggestion = (command: string) => {
+    setActiveTab('counter');
+    if (voice.isConnected) {
+      voice.sendTextTurn(command);
+    } else {
+      setDraftCommand(command);
+    }
   };
 
   const pendingApprovalsCount = approvals.filter((a) => a.status === 'PENDING').length;
@@ -791,10 +967,13 @@ function BolKhataApp() {
 
             {activeTab === 'counter' && (
               <CounterWorkspace
+                activeTab={activeTab}
                 isConnecting={voice.isConnecting}
                 isConnected={voice.isConnected}
                 isMuted={voice.isMuted}
                 setIsMuted={voice.setIsMuted}
+                noisyEnvMode={voice.noisyEnvMode}
+                setNoisyEnvMode={voice.setNoisyEnvMode}
                 isAgentSpeaking={voice.isAgentSpeaking}
                 micLevel={voice.micLevel}
                 latencyMs={voice.latencyMs}
@@ -819,12 +998,26 @@ function BolKhataApp() {
                 transactions={transactions}
                 inventory={inventory}
                 customers={customers}
+                restocks={restocks}
+                receipts={receipts}
                 activeBillPreview={voice.activeBillPreview}
                 onRecordJamaPayment={handleRecordJamaPayment}
                 onQuickLookup={handleQuickLookup}
                 onManualUndo={handleManualUndo}
                 undoBusy={undoBusy}
                 onOpenReceiptModal={setReceiptModalReq}
+                deliveries={deliveries}
+                complaints={complaints}
+                latestOperationalReport={voice.latestOperationalReport}
+                reportLoading={reportLoading}
+                onDismissReport={() => voice.setLatestOperationalReport(null)}
+                onRunQuickReport={handleRunQuickReport}
+                onUpdateDeliveryStatus={handleUpdateDeliveryStatus}
+                onQuickLogDelivery={handleQuickLogDelivery}
+                onUpdateComplaintStatus={handleUpdateComplaintStatus}
+                onQuickLogComplaint={handleQuickLogComplaint}
+                draftCommand={draftCommand}
+                onConsumeDraftCommand={() => setDraftCommand(null)}
               />
             )}
 
@@ -892,6 +1085,16 @@ function BolKhataApp() {
           onCreateSingle={handleCreateSingleReceiptAndNotify}
           onBroadcastAll={handleBroadcastStoreNotifications}
           onClose={() => setReceiptModalReq(null)}
+        />
+      )}
+
+      {user && (
+        <FloatingTabAutoSuggest
+          activeTab={activeTab}
+          isConnected={voice.isConnected}
+          hasRecentHistory={recentUserInputs.length > 0}
+          suggestions={tabAutoSuggestions}
+          onExecuteSuggestion={handleExecuteFloatingSuggestion}
         />
       )}
     </div>

@@ -3,8 +3,11 @@ import {
   createReceiptAndNotifyByVoice,
   createSupplierRestock,
   executeLedgerAndInventoryTx,
+  getSalesAndOrdersReport,
   logAgentTrace,
   lookupCustomerAndStock,
+  manageDeliveryStatus,
+  registerCustomerComplaint,
   requestHumanApproval,
   undoLastTransaction,
 } from './firestoreOps';
@@ -175,6 +178,54 @@ export async function executeBackendTool(
             ? `Created digital Parchis and dispatched store notifications across ${result.dispatched_count} accounts.`
             : `${result.customer_name} (${result.customer_phone}) · Channel ${result.channel} · Bal ₹${result.new_balance}`
           : String(result.error || 'Could not dispatch store receipt'),
+        ms
+      );
+    } else if (name === 'get_sales_and_orders_report') {
+      const report = await getSalesAndOrdersReport(
+        ownerId,
+        String(args.period || 'today')
+      );
+      result = report as unknown as Record<string, unknown>;
+      const ms = Math.round(performance.now() - tStart);
+      await logAgentTrace(
+        ownerId,
+        sessionId,
+        'EXECUTED',
+        `Orders & Sales Report (${report.period_label}) -> ${ms}ms`,
+        `${report.completed_orders_count} orders · Sales ₹${report.total_sales_inr.toLocaleString('en-IN')} · Jama ₹${report.jama_collected_inr.toLocaleString('en-IN')} · ${report.pending_deliveries_count} pending deliveries`,
+        ms
+      );
+    } else if (name === 'manage_delivery_status') {
+      result = await manageDeliveryStatus(ownerId, {
+        customer_name: String(args.customer_name || 'Counter Customer'),
+        status: args.status as string | undefined,
+        order_summary: args.order_summary as string | undefined,
+        note: args.note as string | undefined,
+      });
+      const ms = Math.round(performance.now() - tStart);
+      await logAgentTrace(
+        ownerId,
+        sessionId,
+        'EXECUTED',
+        `Delivery Marked ${result.status} -> ${ms}ms`,
+        `${result.customer_name} · ${result.order_summary} (${result.delivery_id})`,
+        ms
+      );
+    } else if (name === 'register_customer_complaint') {
+      result = await registerCustomerComplaint(ownerId, {
+        customer_name: args.customer_name as string | undefined,
+        fallback_customer_name: args._fallback_customer_name as string | undefined,
+        description: args.description as string | undefined,
+        category: args.category as string | undefined,
+        severity: args.severity as string | undefined,
+      });
+      const ms = Math.round(performance.now() - tStart);
+      await logAgentTrace(
+        ownerId,
+        sessionId,
+        'EXECUTED',
+        `Complaint ${result.ticket_number} Logged -> ${ms}ms`,
+        `${result.customer_name} · ${result.category} (${result.severity}) · ${result.description}`,
         ms
       );
     }

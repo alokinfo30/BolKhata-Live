@@ -1,6 +1,11 @@
 import { executeBackendTool } from './toolHandlers';
 import { getWebSocketUrl, isStaticHostingWithoutBackend } from './backendConfig';
-import type { ActiveBillPreview, ApprovalRequest, TxType } from '../types';
+import type {
+  ActiveBillPreview,
+  ApprovalRequest,
+  OperationalReportSnapshot,
+  TxType,
+} from '../types';
 
 const WORKLET_CODE = `
 class BolKhataPcmProcessor extends AudioWorkletProcessor {
@@ -195,6 +200,7 @@ export interface GeminiLiveClientCallbacks {
   onMicLevel: (rms: number) => void;
   onAgentSpeakingChange: (speaking: boolean) => void;
   onBillPreview?: (bill: ActiveBillPreview) => void;
+  onOperationalReport?: (report: OperationalReportSnapshot) => void;
   onError: (message: string) => void;
 }
 
@@ -218,6 +224,8 @@ export class GeminiLiveClient {
   private lastVoiceActiveMs = 0;
   private wasUserSpeaking = false;
   private muted = false;
+  private noiseGateEnabled = true;
+  private currentRms = 0;
   private ownerId = '';
   private sessionId = '';
   private callbacks: GeminiLiveClientCallbacks;
@@ -231,6 +239,10 @@ export class GeminiLiveClient {
     if (val) {
       this.callbacks.onMicLevel(0);
     }
+  }
+
+  setNoiseGateEnabled(val: boolean): void {
+    this.noiseGateEnabled = val;
   }
 
   async connect(
@@ -314,6 +326,15 @@ export class GeminiLiveClient {
         if (this.muted || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
           return;
         }
+        // In Noisy Counter Mode, suppress low-level ambient shop noise outside speech + 550ms hangover
+        const now = performance.now();
+        if (
+          this.noiseGateEnabled &&
+          this.currentRms < 0.024 &&
+          now - this.lastVoiceActiveMs > 550
+        ) {
+          return;
+        }
         this.ws.send(
           JSON.stringify({
             type: 'audio',
@@ -332,13 +353,15 @@ export class GeminiLiveClient {
           sum += v * v;
         }
         const rms = Math.sqrt(sum / freqData.length);
+        this.currentRms = rms;
         this.callbacks.onMicLevel(this.muted ? 0 : rms);
 
         const now = performance.now();
-        if (!this.muted && rms > 0.045) {
+        const vadThreshold = this.noiseGateEnabled ? 0.052 : 0.036;
+        if (!this.muted && rms > vadThreshold) {
           this.wasUserSpeaking = true;
           this.lastVoiceActiveMs = now;
-        } else if (this.wasUserSpeaking && now - this.lastVoiceActiveMs > 350) {
+        } else if (this.wasUserSpeaking && now - this.lastVoiceActiveMs > 380) {
           this.wasUserSpeaking = false;
           this.turnT0 = now;
         }
@@ -422,7 +445,18 @@ export class GeminiLiveClient {
     args: Record<string, unknown>
   ): Promise<void> {
     if (!this.ownerId || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    const response = await executeBackendTool(this.ownerId, this.sessionId, name, args);
+
+    const enrichedArgs: Record<string, unknown> =
+      name === 'register_customer_complaint' && this.lastLookupCustomer?.name
+        ? { ...args, _fallback_customer_name: this.lastLookupCustomer.name }
+        : args;
+
+    const response = await executeBackendTool(
+      this.ownerId,
+      this.sessionId,
+      name,
+      enrichedArgs
+    );
 
     if (name === 'lookup_customer_and_stock') {
       const fc = response.found_customer as { customer_id?: string; name?: string } | null;
@@ -432,6 +466,10 @@ export class GeminiLiveClient {
       }
       if (fi?.sku && fi?.name) {
         this.lastLookupItem = { sku: fi.sku, name: fi.name, unit: fi.unit || 'units' };
+      }
+    } else if (name === 'get_sales_and_orders_report' && this.callbacks.onOperationalReport) {
+      if (typeof response.period_label === 'string') {
+        this.callbacks.onOperationalReport(response as unknown as OperationalReportSnapshot);
       }
     } else if (name === 'check_business_policy' && this.callbacks.onBillPreview) {
       const totalAmount = Number(args.total_amount ?? 0);

@@ -689,6 +689,133 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "DeliveryRecord": {
+      "title": "DeliveryRecord",
+      "description": "Tracked delivery status for a store, trader, or walk-in customer order.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "delivery_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "customer_id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "customer_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "order_summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "status": {
+          "type": "string",
+          "enum": ["PENDING", "OUT_FOR_DELIVERY", "DELIVERED", "CANCELLED"]
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "delivery_id",
+        "customer_id",
+        "customer_name",
+        "order_summary",
+        "status",
+        "note",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CustomerComplaint": {
+      "title": "CustomerComplaint",
+      "description": "Registered customer or store complaint ticket tracked by the counter operator.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ticket_number": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40
+        },
+        "customer_id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "customer_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "category": {
+          "type": "string",
+          "enum": ["QUALITY", "QUANTITY_SHORTAGE", "DELIVERY_DELAY", "BILLING", "OTHER"]
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["LOW", "MEDIUM", "HIGH"]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "status": {
+          "type": "string",
+          "enum": ["OPEN", "IN_PROGRESS", "RESOLVED"]
+        },
+        "resolution_note": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "ticket_number",
+        "customer_id",
+        "customer_name",
+        "category",
+        "severity",
+        "description",
+        "status",
+        "resolution_note",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -731,6 +858,14 @@
     "/notifications/{notificationId}": {
       "schema": { "$ref": "#/entities/StoreNotification" },
       "description": "Audit log of receipt and Khata notifications dispatched to each store or trader."
+    },
+    "/deliveries/{deliveryId}": {
+      "schema": { "$ref": "#/entities/DeliveryRecord" },
+      "description": "Order dispatch and pending/delivered tracking records owned by the shopkeeper."
+    },
+    "/complaints/{complaintId}": {
+      "schema": { "$ref": "#/entities/CustomerComplaint" },
+      "description": "Registered customer and trader service complaint tickets owned by the shopkeeper."
     }
   }
 }

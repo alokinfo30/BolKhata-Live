@@ -127,6 +127,24 @@ export const DIRTY_DOZEN_TEST_CASES: DirtyDozenCase[] = [
     description:
       'Modifying message or phone after dispatch (only status/updatedAt from DISPATCHED allowed) must fail.',
   },
+  {
+    id: 15,
+    name: 'Delivery Owner/Order Tampering',
+    collection: 'deliveries',
+    operation: 'update',
+    expected: 'PERMISSION_DENIED',
+    description:
+      'Modifying ownerId, delivery_id, or order_summary on a delivery record (only status/note/updatedAt allowed) must fail.',
+  },
+  {
+    id: 16,
+    name: 'Resolved Complaint Re-Opening Tampering',
+    collection: 'complaints',
+    operation: 'update',
+    expected: 'PERMISSION_DENIED',
+    description:
+      'Re-opening or editing a complaint once status == RESOLVED must fail.',
+  },
 ];
 
 import fs from 'fs';
@@ -139,8 +157,8 @@ describe('Firestore Security Rules — Dirty Dozen + Receipt/Notification Invari
     fs.readFileSync(path.resolve(process.cwd(), 'firebase-blueprint.json'), 'utf8')
   ) as { firestore: Record<string, unknown> };
 
-  it('defines all 14 adversarial security test vectors', () => {
-    expect(DIRTY_DOZEN_TEST_CASES).toHaveLength(14);
+  it('defines all 16 adversarial security test vectors', () => {
+    expect(DIRTY_DOZEN_TEST_CASES).toHaveLength(16);
     for (const tc of DIRTY_DOZEN_TEST_CASES) {
       expect(tc.expected).toBe('PERMISSION_DENIED');
     }
@@ -164,15 +182,20 @@ describe('Firestore Security Rules — Dirty Dozen + Receipt/Notification Invari
     expect(rulesText).toContain('exists(/databases/$(database)/documents/customers/');
   });
 
-  it('enforces strict validators and immutable fields for receipts and notifications', () => {
+  it('enforces strict validators and immutable fields for receipts, notifications, deliveries, and complaints', () => {
     expect(rulesText).toContain('function isValidReceipt(data)');
     expect(rulesText).toContain('function isValidStoreNotification(data)');
+    expect(rulesText).toContain('function isValidDeliveryRecord(data)');
+    expect(rulesText).toContain('function isValidCustomerComplaint(data)');
     expect(rulesText).toContain('match /receipts/{receiptId}');
     expect(rulesText).toContain('match /notifications/{notificationId}');
+    expect(rulesText).toContain('match /deliveries/{deliveryId}');
+    expect(rulesText).toContain('match /complaints/{complaintId}');
     expect(rulesText).toContain("existing().status != 'VOIDED'");
     expect(rulesText).toContain("existing().status == 'DISPATCHED'");
     expect(rulesText).toContain("existing().status == 'COMPLETED'");
     expect(rulesText).toContain("incoming().status == 'UNDONE'");
+    expect(rulesText).toContain("existing().status != 'RESOLVED'");
   });
 
   it('covers every collection declared in firebase-blueprint.json with explicit match blocks', () => {

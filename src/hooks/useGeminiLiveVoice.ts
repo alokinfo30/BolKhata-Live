@@ -10,6 +10,7 @@ import type {
   Customer,
   InventoryItem,
   LatencySamplePoint,
+  OperationalReportSnapshot,
   TranscriptMessage,
 } from '../types';
 
@@ -27,12 +28,15 @@ export function useGeminiLiveVoice({
   const [isConnecting, setIsConnecting] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [noisyEnvMode, setNoisyEnvMode] = useState(true);
   const [isAgentSpeaking, setIsAgentSpeaking] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const [latencySamples, setLatencySamples] = useState<number[]>([]);
   const [latencyHistory, setLatencyHistory] = useState<LatencySamplePoint[]>([]);
   const [activeBillPreview, setActiveBillPreview] = useState<ActiveBillPreview | null>(null);
+  const [latestOperationalReport, setLatestOperationalReport] =
+    useState<OperationalReportSnapshot | null>(null);
   const [liveTranscripts, setLiveTranscripts] = useState<TranscriptMessage[]>([]);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [micUnavailable, setMicUnavailable] = useState(false);
@@ -226,6 +230,7 @@ export function useGeminiLiveVoice({
       onMicLevel: (rms) => setMicLevel(rms),
       onAgentSpeakingChange: (speaking) => setIsAgentSpeaking(speaking),
       onBillPreview: (bill) => setActiveBillPreview(bill),
+      onOperationalReport: (report) => setLatestOperationalReport(report),
       onError: (message) => {
         setVoiceError(message);
         setIsConnecting(false);
@@ -234,6 +239,7 @@ export function useGeminiLiveVoice({
 
     clientRef.current = client;
     client.setMuted(isMuted);
+    client.setNoiseGateEnabled(noisyEnvMode);
 
     const catalogSummary = [
       'CUSTOMERS: ' +
@@ -306,6 +312,7 @@ export function useGeminiLiveVoice({
     isConnected,
     isConnecting,
     isMuted,
+    noisyEnvMode,
     refreshAudioDevices,
     selectedMicId,
     stopSession,
@@ -314,6 +321,11 @@ export function useGeminiLiveVoice({
   const handleSetMuted = useCallback((val: boolean) => {
     setIsMuted(val);
     clientRef.current?.setMuted(val);
+  }, []);
+
+  const handleSetNoisyEnvMode = useCallback((val: boolean) => {
+    setNoisyEnvMode(val);
+    clientRef.current?.setNoiseGateEnabled(val);
   }, []);
 
   const flushPlayback = useCallback(() => {
@@ -364,6 +376,8 @@ export function useGeminiLiveVoice({
     isConnected,
     isMuted,
     setIsMuted: handleSetMuted,
+    noisyEnvMode,
+    setNoisyEnvMode: handleSetNoisyEnvMode,
     isAgentSpeaking,
     micLevel,
     latencyMs,
@@ -371,6 +385,8 @@ export function useGeminiLiveVoice({
     latencyHistory,
     activeBillPreview,
     setActiveBillPreview,
+    latestOperationalReport,
+    setLatestOperationalReport,
     liveTranscripts,
     voiceError,
     micUnavailable,

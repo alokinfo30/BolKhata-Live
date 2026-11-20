@@ -18,13 +18,24 @@ import {
   buildUpiUriForReceipt,
   sanitizeUpiUri,
 } from '../utils/receiptUtils';
+import {
+  buildComplaintTicketNumber,
+  buildSalesAndOrdersReport,
+} from '../utils/operationsReports';
 import type {
   ApprovalRequest,
+  ComplaintCategory,
+  ComplaintSeverity,
+  ComplaintStatus,
   Customer,
+  CustomerComplaint,
+  DeliveryRecord,
+  DeliveryStatus,
   InventoryItem,
   LedgerTransaction,
   NotificationChannel,
   NotificationStatus,
+  OperationalReportSnapshot,
   Receipt,
   RestockOrder,
   SentimentLabel,
@@ -1472,6 +1483,383 @@ export async function createReceiptAndNotifyByVoice(
     notification_status: dispatched.notification.status,
   };
 }
+
+export async function getSalesAndOrdersReport(
+  ownerId: string,
+  period = 'today'
+): Promise<OperationalReportSnapshot> {
+  try {
+    const [txSnap, custSnap, invSnap, delSnap, cmpSnap] = await Promise.all([
+      getDocs(query(collection(db, 'transactions'), where('ownerId', '==', ownerId))),
+      getDocs(query(collection(db, 'customers'), where('ownerId', '==', ownerId))),
+      getDocs(query(collection(db, 'inventory'), where('ownerId', '==', ownerId))),
+      getDocs(query(collection(db, 'deliveries'), where('ownerId', '==', ownerId))),
+      getDocs(query(collection(db, 'complaints'), where('ownerId', '==', ownerId))),
+    ]);
+
+    const transactions = txSnap.docs
+      .map((d) => ({ id: d.id, ...(d.data() as Omit<LedgerTransaction, 'id'>) }))
+      .sort((a, b) => {
+        const ta = (a.createdAt as Timestamp | undefined)?.toMillis?.() ?? 0;
+        const tb = (b.createdAt as Timestamp | undefined)?.toMillis?.() ?? 0;
+        return tb - ta;
+      });
+    const customers = custSnap.docs.map((d) => ({
+      id: d.id,
+      ...(d.data() as Omit<Customer, 'id'>),
+    }));
+    const inventory = invSnap.docs.map((d) => ({
+      id: d.id,
+      ...(d.data() as Omit<InventoryItem, 'id'>),
+    }));
+    const deliveries = delSnap.docs.map((d) => ({
+      id: d.id,
+      ...(d.data() as Omit<DeliveryRecord, 'id'>),
+    }));
+    const complaints = cmpSnap.docs.map((d) => ({
+      id: d.id,
+      ...(d.data() as Omit<CustomerComplaint, 'id'>),
+    }));
+
+    return buildSalesAndOrdersReport({
+      period,
+      transactions,
+      customers,
+      inventory,
+      deliveries,
+      complaints,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'transactions/report');
+  }
+}
+
+function normalizeDeliveryStatus(raw?: string): DeliveryStatus {
+  const up = String(raw || 'PENDING')
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, '_');
+  if (up === 'OUT_FOR_DELIVERY' || up === 'DISPATCHED' || up === 'IN_TRANSIT') {
+    return 'OUT_FOR_DELIVERY';
+  }
+  if (up === 'DELIVERED' || up === 'COMPLETED' || up === 'DONE') {
+    return 'DELIVERED';
+  }
+  if (up === 'CANCELLED' || up === 'CANCELED') {
+    return 'CANCELLED';
+  }
+  return 'PENDING';
+}
+
+export async function manageDeliveryStatus(
+  ownerId: string,
+  args: {
+    customer_name: string;
+    status?: string;
+    order_summary?: string;
+    note?: string;
+  }
+): Promise<Record<string, unknown>> {
+  const cleanCustomerName = clampStr(args.customer_name, 120, 'Counter Customer');
+  const targetStatus = normalizeDeliveryStatus(args.status);
+  const deliveryId = makeSafeId('del');
+
+  try {
+    const [custSnap, delSnap, txSnap] = await Promise.all([
+      getDocs(query(collection(db, 'customers'), where('ownerId', '==', ownerId))),
+      getDocs(query(collection(db, 'deliveries'), where('ownerId', '==', ownerId))),
+      getDocs(query(collection(db, 'transactions'), where('ownerId', '==', ownerId))),
+    ]);
+
+    const customers = custSnap.docs.map((d) => ({
+      id: d.id,
+      ...(d.data() as Omit<Customer, 'id'>),
+    }));
+    const q = normalizeText(cleanCustomerName);
+    const matchedCust =
+      customers.find((c) => normalizeText(c.name) === q) ||
+      customers.find(
+        (c) =>
+          q.length >= 2 &&
+          (normalizeText(c.name).includes(q) || q.includes(normalizeText(c.name).split(' ')[0]))
+      ) ||
+      null;
+
+    const finalName = matchedCust ? matchedCust.name : cleanCustomerName;
+    const finalNorm = normalizeText(finalName);
+
+    const existingDeliveries = delSnap.docs
+      .map((d) => ({ id: d.id, ...(d.data() as Omit<DeliveryRecord, 'id'>) }))
+      .sort((a, b) => {
+        const ta = (a.createdAt as Timestamp | undefined)?.toMillis?.() ?? 0;
+        const tb = (b.createdAt as Timestamp | undefined)?.toMillis?.() ?? 0;
+        return tb - ta;
+      });
+
+    const matchedDelivery = existingDeliveries.find(
+      (d) =>
+        (matchedCust && d.customer_id === matchedCust.id) ||
+        normalizeText(d.customer_name) === finalNorm ||
+        normalizeText(d.customer_name).includes(q)
+    );
+
+    // Update existing open delivery record if one exists and isn't already finalized
+    if (matchedDelivery && matchedDelivery.status !== 'DELIVERED') {
+      const ref = doc(db, 'deliveries', matchedDelivery.id);
+      const updatedNote = clampStr(
+        args.note,
+        300,
+        matchedDelivery.note || `Marked ${targetStatus} via BolKhata counter`
+      );
+      await runTransaction(db, async (transaction) => {
+        const snap = await transaction.get(ref);
+        if (!snap.exists()) return;
+        transaction.update(ref, {
+          status: targetStatus,
+          note: updatedNote,
+          updatedAt: serverTimestamp(),
+        });
+      });
+
+      return {
+        ok: true,
+        action: 'UPDATED',
+        delivery_id: matchedDelivery.delivery_id,
+        customer_name: matchedDelivery.customer_name,
+        order_summary: matchedDelivery.order_summary,
+        status: targetStatus,
+        note: updatedNote,
+      };
+    }
+
+    // Derive order summary from latest transaction if not explicitly provided
+    let summary = clampStr(args.order_summary, 240, '');
+    if (!summary && matchedCust) {
+      const latestTx = txSnap.docs
+        .map((d) => d.data() as LedgerTransaction)
+        .filter((t) => t.customer_id === matchedCust.id && t.status === 'COMPLETED')
+        .sort((a, b) => {
+          const ta = (a.createdAt as Timestamp | undefined)?.toMillis?.() ?? 0;
+          const tb = (b.createdAt as Timestamp | undefined)?.toMillis?.() ?? 0;
+          return tb - ta;
+        })[0];
+      if (latestTx) {
+        summary = clampStr(
+          latestTx.qty > 0
+            ? `${latestTx.qty} ${latestTx.unit} ${latestTx.item_name} (₹${latestTx.total_amount})`
+            : `${latestTx.item_name} (₹${latestTx.total_amount})`,
+          240
+        );
+      }
+    }
+    if (!summary) {
+      summary = `Order delivery for ${finalName}`;
+    }
+
+    const noteText = clampStr(args.note, 300, `Marked ${targetStatus} at counter`);
+    const now = serverTimestamp();
+
+    await setDoc(doc(db, 'deliveries', deliveryId), {
+      ownerId,
+      delivery_id: deliveryId,
+      customer_id: matchedCust ? matchedCust.id : '',
+      customer_name: finalName,
+      order_summary: summary,
+      status: targetStatus,
+      note: noteText,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return {
+      ok: true,
+      action: 'CREATED',
+      delivery_id: deliveryId,
+      customer_name: finalName,
+      order_summary: summary,
+      status: targetStatus,
+      note: noteText,
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `deliveries/${deliveryId}`);
+  }
+}
+
+export async function updateDeliveryStatusById(
+  deliveryId: string,
+  status: DeliveryStatus,
+  note?: string
+): Promise<void> {
+  try {
+    const ref = doc(db, 'deliveries', deliveryId);
+    await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(ref);
+      if (!snap.exists()) return;
+      const cur = snap.data() as DeliveryRecord;
+      transaction.update(ref, {
+        status,
+        note: clampStr(note, 300, cur.note),
+        updatedAt: serverTimestamp(),
+      });
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `deliveries/${deliveryId}`);
+  }
+}
+
+function normalizeComplaintCategory(raw?: string): ComplaintCategory {
+  const up = String(raw || 'OTHER')
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, '_');
+  if (up === 'QUALITY' || up === 'DAMAGED' || up === 'BAD_QUALITY') return 'QUALITY';
+  if (up === 'QUANTITY_SHORTAGE' || up === 'SHORTAGE' || up === 'MISSING') {
+    return 'QUANTITY_SHORTAGE';
+  }
+  if (up === 'DELIVERY_DELAY' || up === 'DELAY' || up === 'LATE_DELIVERY') {
+    return 'DELIVERY_DELAY';
+  }
+  if (up === 'BILLING' || up === 'PRICE' || up === 'OVERCHARGE') return 'BILLING';
+  return 'OTHER';
+}
+
+function normalizeComplaintSeverity(raw?: string): ComplaintSeverity {
+  const up = String(raw || 'MEDIUM').trim().toUpperCase();
+  if (up === 'HIGH' || up === 'URGENT' || up === 'CRITICAL') return 'HIGH';
+  if (up === 'LOW') return 'LOW';
+  return 'MEDIUM';
+}
+
+export async function registerCustomerComplaint(
+  ownerId: string,
+  args: {
+    customer_name?: string;
+    fallback_customer_name?: string;
+    description?: string;
+    category?: string;
+    severity?: string;
+  }
+): Promise<Record<string, unknown>> {
+  const complaintId = makeSafeId('cmp');
+  const ticketNumber = buildComplaintTicketNumber();
+
+  try {
+    const [custSnap, txSnap] = await Promise.all([
+      getDocs(query(collection(db, 'customers'), where('ownerId', '==', ownerId))),
+      getDocs(query(collection(db, 'transactions'), where('ownerId', '==', ownerId))),
+    ]);
+
+    const customers = custSnap.docs.map((d) => ({
+      id: d.id,
+      ...(d.data() as Omit<Customer, 'id'>),
+    }));
+
+    const rawName = (args.customer_name || args.fallback_customer_name || '').trim();
+    let matchedCust: Customer | null = null;
+    if (rawName && !/^(is customer|this customer|current customer|customer)$/i.test(rawName)) {
+      const q = normalizeText(rawName);
+      matchedCust =
+        customers.find((c) => normalizeText(c.name) === q) ||
+        customers.find(
+          (c) =>
+            q.length >= 2 &&
+            (normalizeText(c.name).includes(q) || q.includes(normalizeText(c.name).split(' ')[0]))
+        ) ||
+        null;
+    }
+
+    // If user said "Is customer ki complaint register karo", attach most recent transaction customer
+    let finalName = matchedCust ? matchedCust.name : rawName;
+    let finalCustomerId = matchedCust ? matchedCust.id : '';
+
+    if (
+      !finalName ||
+      /^(is customer|this customer|current customer|customer)$/i.test(finalName)
+    ) {
+      const latestTx = txSnap.docs
+        .map((d) => d.data() as LedgerTransaction)
+        .sort((a, b) => {
+          const ta = (a.createdAt as Timestamp | undefined)?.toMillis?.() ?? 0;
+          const tb = (b.createdAt as Timestamp | undefined)?.toMillis?.() ?? 0;
+          return tb - ta;
+        })[0];
+      if (latestTx) {
+        finalName = latestTx.customer_name;
+        finalCustomerId = latestTx.customer_id;
+      } else if (customers[0]) {
+        finalName = customers[0].name;
+        finalCustomerId = customers[0].id;
+      } else {
+        finalName = 'Walk-in Counter Customer';
+      }
+    }
+
+    const safeName = clampStr(finalName, 120, 'Walk-in Counter Customer');
+    const description = clampStr(
+      args.description,
+      500,
+      `Customer complaint logged at counter for ${safeName}`
+    );
+    const category = normalizeComplaintCategory(args.category);
+    const severity = normalizeComplaintSeverity(args.severity);
+    const now = serverTimestamp();
+
+    await setDoc(doc(db, 'complaints', complaintId), {
+      ownerId,
+      ticket_number: ticketNumber,
+      customer_id: clampStr(finalCustomerId, 128, ''),
+      customer_name: safeName,
+      category,
+      severity,
+      description,
+      status: 'OPEN',
+      resolution_note: '',
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return {
+      ok: true,
+      complaint_id: complaintId,
+      ticket_number: ticketNumber,
+      customer_name: safeName,
+      category,
+      severity,
+      description,
+      status: 'OPEN',
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, `complaints/${complaintId}`);
+  }
+}
+
+export async function updateComplaintStatusById(
+  complaintId: string,
+  status: Extract<ComplaintStatus, 'IN_PROGRESS' | 'RESOLVED'>,
+  resolutionNote?: string
+): Promise<void> {
+  try {
+    const ref = doc(db, 'complaints', complaintId);
+    await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(ref);
+      if (!snap.exists()) return;
+      const cur = snap.data() as CustomerComplaint;
+      if (cur.status === 'RESOLVED') return;
+      transaction.update(ref, {
+        status,
+        resolution_note: clampStr(
+          resolutionNote,
+          300,
+          cur.resolution_note || (status === 'RESOLVED' ? 'Resolved by store counter' : '')
+        ),
+        updatedAt: serverTimestamp(),
+      });
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `complaints/${complaintId}`);
+  }
+}
+
 
 
 
